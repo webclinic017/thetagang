@@ -1,13 +1,13 @@
 #!/usr/bin/env python
 
 import asyncio
-import copy
-import pprint
 
 import click
 from ib_insync import IB, IBC, Index, Watchdog, util
-from ib_insync.contract import Stock
+from ib_insync.contract import Contract, Stock
 from ib_insync.objects import Position
+
+from thetagang.config import validate_config
 
 from .portfolio_manager import PortfolioManager
 from .util import (
@@ -18,20 +18,21 @@ from .util import (
     to_camel_case,
 )
 
-pp = pprint.PrettyPrinter(indent=2)
-
 util.patchAsyncio()
 
 
-def start(**kwargs):
+def start(config):
     import toml
 
-    with open(kwargs.get("config"), "r") as f:
+    with open(config, "r") as f:
         config = toml.load(f)
 
-    click.secho(f"Config:", fg="green")
+    validate_config(config)
 
-    click.secho(f"\n  Account details:", fg="green")
+    click.secho(f"Config:", fg="green")
+    click.echo()
+
+    click.secho(f"  Account details:", fg="green")
     click.secho(
         f"    Number                   = {config['account']['number']}", fg="cyan"
     )
@@ -40,15 +41,16 @@ def start(**kwargs):
         fg="cyan",
     )
     click.secho(
-        f"    Minimum excess liquidity = {config['account']['minimum_excess_liquidity']} ({config['account']['minimum_excess_liquidity'] * 100}%)",
+        f"    Margin usage             = {config['account']['margin_usage']} ({config['account']['margin_usage'] * 100}%)",
         fg="cyan",
     )
     click.secho(
         f"    Market data type         = {config['account']['market_data_type']}",
         fg="cyan",
     )
+    click.echo()
 
-    click.secho(f"\n  Roll options when either condition is true:", fg="green")
+    click.secho(f"  Roll options when either condition is true:", fg="green")
     click.secho(
         f"    Days to expiry          <= {config['roll_when']['dte']}", fg="cyan"
     )
@@ -57,7 +59,8 @@ def start(**kwargs):
         fg="cyan",
     )
 
-    click.secho(f"\n  Write options with targets of:", fg="green")
+    click.echo()
+    click.secho(f"  Write options with targets of:", fg="green")
     click.secho(f"    Days to expiry          >= {config['target']['dte']}", fg="cyan")
     click.secho(
         f"    Delta                   <= {config['target']['delta']}", fg="cyan"
@@ -67,7 +70,8 @@ def start(**kwargs):
         fg="cyan",
     )
 
-    click.secho(f"\n  Symbols:", fg="green")
+    click.echo()
+    click.secho(f"  Symbols:", fg="green")
     for s in config["symbols"].keys():
         click.secho(
             f"    {s}, weight = {config['symbols'][s]['weight']} ({config['symbols'][s]['weight'] * 100}%)",
@@ -76,71 +80,15 @@ def start(**kwargs):
     assert (
         sum([config["symbols"][s]["weight"] for s in config["symbols"].keys()]) == 1.0
     )
+    click.echo()
 
-    camelcase_kwargs = dict()
-    # add in camel case copy of args
-    for k in kwargs.keys():
-        if k.startswith("ibkr_"):
-            camelcase_kwargs[to_camel_case(k[5:])] = kwargs[k]
+    if config.get("ib_insync", {}).get("logfile"):
+        util.logToFile(config["ib_insync"]["logfile"])
 
-    ibc = IBC(**camelcase_kwargs)
+    ibc = IBC(**config["ibc"])
 
     def onConnected():
-        ib.reqMarketDataType(config["account"]["market_data_type"])
-
-        if config["account"]["cancel_orders"]:
-            # Cancel any existing orders
-            open_orders = ib.openOrders()
-            for order in open_orders:
-                if order.isActive() and order.contract.symbol in config["symbols"]:
-                    click.secho(f"Canceling order {order}", fg="red")
-                    ib.cancelOrder(order)
-
-        account_summary = ib.accountSummary(config["account"]["number"])
-        click.secho(f"\nAccount summary:\n", fg="green")
-        account_summary = account_summary_to_dict(account_summary)
-
-        click.secho(
-            f"  Excess liquidity  = {justify(account_summary['ExcessLiquidity'].value)}",
-            fg="cyan",
-        )
-        click.secho(
-            f"  Net liquidation   = {justify(account_summary['NetLiquidation'].value)}",
-            fg="cyan",
-        )
-        click.secho(
-            f"  Full maint margin = {justify(account_summary['FullMaintMarginReq'].value)}",
-            fg="cyan",
-        )
-        click.secho(
-            f"  Buying power      = {justify(account_summary['BuyingPower'].value)}",
-            fg="cyan",
-        )
-        click.secho(
-            f"  Total cash value  = {justify(account_summary['TotalCashValue'].value)}",
-            fg="cyan",
-        )
-        click.secho(
-            f"  Cushion           = {account_summary['Cushion'].value} ({round(float(account_summary['Cushion'].value) * 100, 1)}%)",
-            fg="cyan",
-        )
-
-        portfolio_positions = ib.portfolio()
-        portfolio_positions = list(
-            filter(
-                lambda p: p.account == config["account"]["number"], portfolio_positions
-            )
-        )
-
-        click.secho("\nPortfolio positions:", fg="green")
-        portfolio_positions = portfolio_positions_to_dict(portfolio_positions)
-        for symbol in portfolio_positions.keys():
-            click.secho(f"\n  {symbol}:", fg="cyan")
-            for p in portfolio_positions[symbol]:
-                click.secho(f"    {p.contract}", fg="cyan")
-                click.secho(f"      P&L {round(position_pnl(p) * 100, 1)}%", fg="cyan")
-
-        portfolio_manager.manage(account_summary, portfolio_positions)
+        portfolio_manager.manage()
 
     ib = IB()
     ib.connectedEvent += onConnected
@@ -148,7 +96,17 @@ def start(**kwargs):
     completion_future = asyncio.Future()
     portfolio_manager = PortfolioManager(config, ib, completion_future)
 
-    watchdog = Watchdog(ibc, ib, port=4002, probeContract=Stock("SPY", "SMART", "USD"))
+    probeContractConfig = config["watchdog"]["probeContract"]
+    watchdogConfig = config.get("watchdog")
+    del watchdogConfig["probeContract"]
+    probeContract = Contract(
+        secType=probeContractConfig["secType"],
+        symbol=probeContractConfig["symbol"],
+        currency=probeContractConfig["currency"],
+        exchange=probeContractConfig["exchange"],
+    )
+
+    watchdog = Watchdog(ibc, ib, probeContract=probeContract, **watchdogConfig)
 
     watchdog.start()
     ib.run(completion_future)

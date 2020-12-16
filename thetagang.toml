@@ -1,15 +1,27 @@
 [account]
 # The account number to operate on
-number = "DU2962946"
+number = "DU3162941"
 
 # Cancel any existing orders for the symbols configured at startup
 cancel_orders = true
 
-# Minimum amount of excess liquidity as a percentage of net liquidation value
-minimum_excess_liquidity = 0.2
+# Maximum amount of margin to use, as a percentage of net liquidation. IB lets
+# you use varying amounts of margin, depending on the assets. To use up to 4x
+# margin, set this to 4. It's recommended you always leave some additional
+# cushion. IB will start to close positions if you go below certain thresholds
+# of available margin in your account.
+#
+# For details on margin usage, see:
+#   https://www.interactivebrokers.com/en/index.php?f=24176
+#
+# The default value uses 50% of your available net liquidation value
+# (i.e., half of your funds). Set this to 1.0 to use all your funds,
+# or 1.5 to use 150% (which may incur margin interest charges).
+margin_usage = 0.5
 
-# Market data type (see https://interactivebrokers.github.io/tws-api/market_data_type.html)
-market_data_type = 2
+# Market data type (see
+# https://interactivebrokers.github.io/tws-api/market_data_type.html)
+market_data_type = 1
 
 [option_chains]
 # Number of expirations to load from option chains
@@ -32,6 +44,8 @@ delta = 0.3
 minimum_open_interest = 10
 
 [symbols]
+# NOTE: Please change these symbols and weights according to your preferences.
+# These are provided only as an example for the purpose of configuration.
 
   [symbols.SPY]
   weight = 0.4
@@ -41,3 +55,45 @@ minimum_open_interest = 10
 
   [symbols.TLT]
   weight = 0.3
+
+[ib_insync]
+logfile = 'ib_insync.log'
+
+[ibc]
+# IBC configuration parameters. See
+# https://ib-insync.readthedocs.io/api.html#ibc for details.
+password = 'demo'
+userid   = 'demo'
+
+gateway     = true
+ibcPath     = '/opt/ibc'
+tradingMode = 'paper'
+twsVersion  = 981
+
+# Change this to point to your config.ini for IBC
+ibcIni = '/etc/thetagang/config.ini'
+
+# twsPath         = ''
+# twsSettingsPath = ''
+# javaPath        = ''
+# fixuserid       = ''
+# fixpassword     = ''
+
+[watchdog]
+# Watchdog configuration params. See
+# https://ib-insync.readthedocs.io/api.html#watchdog for details.
+appStartupTime = 30
+appTimeout     = 20
+clientId       = 1
+connectTimeout = 2
+host           = '127.0.0.1'
+port           = 4002
+probeTimeout   = 4
+readonly       = false
+retryDelay     = 2
+
+  [watchdog.probeContract]
+  currency = 'USD'
+  exchange = 'SMART'
+  secType  = 'STK'
+  symbol   = 'SPY'
