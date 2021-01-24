@@ -9,8 +9,10 @@ from thetagang.util import (
     account_summary_to_dict,
     count_option_positions,
     justify,
+    midpoint_or_market_price,
     portfolio_positions_to_dict,
     position_pnl,
+    while_n_times,
 )
 
 from .options import option_dte
@@ -43,14 +45,34 @@ class PortfolioManager:
 
         return r
 
+    def wait_for_midpoint_price(self, ticker):
+        while_n_times(
+            lambda: util.isNan(ticker.midpoint()),
+            lambda: self.ib.waitOnUpdate(timeout=2),
+            10,
+        )
+
+    def wait_for_market_price(self, ticker):
+        while_n_times(
+            lambda: util.isNan(ticker.marketPrice()),
+            lambda: self.ib.waitOnUpdate(timeout=2),
+            10,
+        )
+
     def put_is_itm(self, contract):
         stock = Stock(contract.symbol, "SMART", currency="USD")
         [ticker] = self.ib.reqTickers(stock)
+
+        self.wait_for_market_price(ticker)
+
         return contract.strike >= ticker.marketPrice()
 
     def put_can_be_rolled(self, put):
-        # Check if this put is ITM. Do not roll ITM puts.
-        if self.put_is_itm(put.contract):
+        # Check if this put is ITM, and if it's o.k. to roll
+        if (
+            "puts" not in self.config["roll_when"]
+            or not self.config["roll_when"]["puts"]["itm"]
+        ) and self.put_is_itm(put.contract):
             return False
 
         dte = option_dte(put.contract.lastTradeDateOrContractMonth)
@@ -65,14 +87,29 @@ class PortfolioManager:
 
         if pnl >= self.config["roll_when"]["pnl"]:
             click.secho(
-                f"  {put.contract.localSymbol} can be rolled because P&L of {round(pnl * 100, 1)}% is >= {round(self.config['roll_when']['pnl'] * 100,1)}",
+                f"  {put.contract.localSymbol} can be rolled because P&L of {round(pnl * 100, 1)}% is >= {round(self.config['roll_when']['pnl'] * 100, 1)}",
                 fg="blue",
             )
             return True
 
         return False
 
+    def call_is_itm(self, contract):
+        stock = Stock(contract.symbol, "SMART", currency="USD")
+        [ticker] = self.ib.reqTickers(stock)
+
+        self.wait_for_market_price(ticker)
+
+        return contract.strike <= ticker.marketPrice()
+
     def call_can_be_rolled(self, call):
+        # Check if this call is ITM, and it's o.k. to roll
+        if (
+            "calls" in self.config["roll_when"]
+            and not self.config["roll_when"]["calls"]["itm"]
+        ) and self.call_is_itm(call.contract):
+            return False
+
         dte = option_dte(call.contract.lastTradeDateOrContractMonth)
         pnl = position_pnl(call)
 
@@ -85,7 +122,7 @@ class PortfolioManager:
 
         if pnl >= self.config["roll_when"]["pnl"]:
             click.secho(
-                f"{call.contract.localSymbol} can be rolled because P&L of {round(pnl * 100, 1)}% is >= {round(self.config['roll_when']['pnl'] * 100,1)}",
+                f"{call.contract.localSymbol} can be rolled because P&L of {round(pnl * 100, 1)}% is >= {round(self.config['roll_when']['pnl'] * 100, 1)}",
                 fg="blue",
             )
             return True
@@ -165,7 +202,7 @@ class PortfolioManager:
                 if isinstance(p.contract, Stock):
                     pnl = round(position_pnl(p) * 100, 2)
                     click.secho(
-                        f"    Stock Qty={int(p.position)} Price={round(p.marketPrice,2)} Value={round(p.marketValue,2)} AvgCost={round(p.averageCost,2)} P&L={pnl}%",
+                        f"    Stock Qty={int(p.position)} Price={round(p.marketPrice, 2)} Value={round(p.marketValue,2)} Cost={round(p.averageCost * p.position,2)} P&L={pnl}%",
                         fg="cyan",
                     )
                 elif isinstance(p.contract, Option):
@@ -175,7 +212,7 @@ class PortfolioManager:
                         return "Call" if p.contract.right.startswith("C") else "Put "
 
                     click.secho(
-                        f"    {p_or_c(p)}  Qty={int(p.position)} Price={round(p.marketPrice,2)} Value={round(p.marketValue,2)} AvgCost={round(p.averageCost,2)} P&L={pnl}% Strike={p.contract.strike} Exp={p.contract.lastTradeDateOrContractMonth}",
+                        f"    {p_or_c(p)}  Qty={int(p.position)} Price={round(p.marketPrice, 2)} Value={round(p.marketValue,2)} Cost={round(p.averageCost * p.position,2)} P&L={pnl}% Strike={p.contract.strike} Exp={p.contract.lastTradeDateOrContractMonth}",
                         fg="cyan",
                     )
                 else:
@@ -272,23 +309,29 @@ class PortfolioManager:
                 self.write_calls(symbol, calls_to_write)
 
     def wait_for_trade_submitted(self, trade):
-        while trade.orderStatus.status not in [
-            "Submitted",
-            "Filled",
-            "ApiCancelled",
-            "Cancelled",
-        ]:
-            self.ib.waitOnUpdate(timeout=2)
+        while_n_times(
+            lambda: trade.orderStatus.status
+            not in [
+                "Submitted",
+                "Filled",
+                "ApiCancelled",
+                "Cancelled",
+            ],
+            lambda: self.ib.waitOnUpdate(timeout=2),
+            10,
+        )
         return trade
 
     def write_calls(self, symbol, quantity):
         sell_ticker = self.find_eligible_contracts(symbol, "C")
 
+        self.wait_for_midpoint_price(sell_ticker)
+
         # Create order
         order = LimitOrder(
             "SELL",
             quantity,
-            round(sell_ticker.marketPrice(), 2),
+            round(midpoint_or_market_price(sell_ticker), 2),
             algoStrategy="Adaptive",
             algoParams=[TagValue("adaptivePriority", "Patient")],
             tif="DAY",
@@ -305,11 +348,13 @@ class PortfolioManager:
     def write_puts(self, symbol, quantity):
         sell_ticker = self.find_eligible_contracts(symbol, "P")
 
+        self.wait_for_midpoint_price(sell_ticker)
+
         # Create order
         order = LimitOrder(
             "SELL",
             quantity,
-            round(sell_ticker.marketPrice(), 2),
+            round(midpoint_or_market_price(sell_ticker), 2),
             algoStrategy="Adaptive",
             algoParams=[TagValue("adaptivePriority", "Patient")],
             tif="DAY",
@@ -332,23 +377,20 @@ class PortfolioManager:
             if isinstance(position.contract, Stock)
         ]
 
-        remaining_buying_power = math.floor(
-            min(
-                [
-                    float(account_summary["BuyingPower"].value),
-                    float(account_summary["NetLiquidation"].value)
-                    * self.config["account"]["margin_usage"],
-                ]
-            )
+        total_buying_power = math.floor(
+            float(account_summary["NetLiquidation"].value)
+            * self.config["account"]["margin_usage"]
         )
 
         click.echo()
-        click.secho(f"Remaining buying power: ${remaining_buying_power}", fg="green")
-        #
+        click.secho(
+            f"Total buying power: ${total_buying_power} at {round(self.config['account']['margin_usage'] * 100, 1)}% margin usage",
+            fg="green",
+        )
+
         # Sum stock values that we care about
         total_value = (
-            sum([stock.marketValue for stock in stock_positions])
-            + remaining_buying_power
+            sum([stock.marketValue for stock in stock_positions]) + total_buying_power
         )
         click.secho(f"Total value: ${total_value}", fg="green")
         click.echo()
@@ -366,6 +408,8 @@ class PortfolioManager:
             click.secho(f"  {symbol}", fg="green")
             stock = Stock(symbol, "SMART", currency="USD")
             [ticker] = self.ib.reqTickers(stock)
+
+            self.wait_for_market_price(ticker)
 
             current_position = math.floor(
                 stock_symbols[symbol].position if symbol in stock_symbols else 0
@@ -396,6 +440,9 @@ class PortfolioManager:
         # Figure out how many addition puts are needed, if they're needed
         for symbol in target_additional_quantity.keys():
             additional_quantity = target_additional_quantity[symbol]
+            # NOTE: it's possible there are non-standard option contract sizes,
+            # like with futures, but we don't bother handling those cases.
+            # Please don't use this code with futures.
             if additional_quantity >= 100:
                 put_count = count_option_positions(symbol, portfolio_positions, "P")
                 target_put_count = additional_quantity // 100
@@ -418,13 +465,19 @@ class PortfolioManager:
     def roll_positions(self, positions, right):
         for position in positions:
             symbol = position.contract.symbol
+
             sell_ticker = self.find_eligible_contracts(symbol, right)
+            self.wait_for_midpoint_price(sell_ticker)
+
             quantity = abs(position.position)
 
             position.contract.exchange = "SMART"
             [buy_ticker] = self.ib.reqTickers(position.contract)
+            self.wait_for_midpoint_price(buy_ticker)
 
-            price = buy_ticker.marketPrice() - sell_ticker.marketPrice()
+            price = midpoint_or_market_price(buy_ticker) - midpoint_or_market_price(
+                sell_ticker
+            )
 
             # Create combo legs
             comboLegs = [
@@ -535,9 +588,9 @@ class PortfolioManager:
                 if right.startswith("C"):
                     return util.isNan(ticker.callOpenInterest)
 
-            while open_interest_is_not_ready():
-                self.ib.waitOnUpdate(timeout=2)
-
+            while_n_times(
+                open_interest_is_not_ready, lambda: self.ib.waitOnUpdate(timeout=2), 10
+            )
             self.ib.cancelMktData(ticker.contract)
 
             # The open interest value is never present when using historical
