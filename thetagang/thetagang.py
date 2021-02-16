@@ -8,6 +8,7 @@ from ib_insync.contract import Contract, Stock
 from ib_insync.objects import Position
 
 from thetagang.config import normalize_config, validate_config
+from thetagang.util import get_target_delta
 
 from .portfolio_manager import PortfolioManager
 from .util import (
@@ -23,6 +24,7 @@ util.patchAsyncio()
 
 def start(config):
     import toml
+    import thetagang.config_defaults as config_defaults
 
     with open(config, "r") as f:
         config = toml.load(f)
@@ -54,7 +56,8 @@ def start(config):
 
     click.secho(f"  Roll options when either condition is true:", fg="green")
     click.secho(
-        f"    Days to expiry          <= {config['roll_when']['dte']}", fg="cyan"
+        f"    Days to expiry          <= {config['roll_when']['dte']} and P&L >= {config['roll_when']['min_pnl']} ({config['roll_when']['min_pnl'] * 100}%)",
+        fg="cyan",
     )
     click.secho(
         f"    P&L                     >= {config['roll_when']['pnl']} ({config['roll_when']['pnl'] * 100}%)",
@@ -65,18 +68,35 @@ def start(config):
     click.secho(f"  Write options with targets of:", fg="green")
     click.secho(f"    Days to expiry          >= {config['target']['dte']}", fg="cyan")
     click.secho(
-        f"    Delta                   <= {config['target']['delta']}", fg="cyan"
+        f"    Default delta           <= {config['target']['delta']}", fg="cyan"
+    )
+    if "puts" in config["target"]:
+        click.secho(
+            f"    Delta for puts          <= {config['target']['puts']['delta']}",
+            fg="cyan",
+        )
+    if "calls" in config["target"]:
+        click.secho(
+            f"    Delta for calls         <= {config['target']['calls']['delta']}",
+            fg="cyan",
+        )
+    click.secho(
+        f"    Maximum new contracts    = {config['target']['maximum_new_contracts']}",
+        fg="cyan",
     )
     click.secho(
-        f"    Minimum open interest   >= {config['target']['minimum_open_interest']}",
+        f"    Minimum open interest    = {config['target']['minimum_open_interest']}",
         fg="cyan",
     )
 
     click.echo()
     click.secho(f"  Symbols:", fg="green")
     for s in config["symbols"].keys():
+        c = config["symbols"][s]
+        c_delta = get_target_delta(config, s, "C")
+        p_delta = get_target_delta(config, s, "P")
         click.secho(
-            f"    {s}, weight = {config['symbols'][s]['weight']} ({config['symbols'][s]['weight'] * 100}%)",
+            f"    {s}, weight = {c['weight']} ({c['weight'] * 100}%), delta = {p_delta}p, {c_delta}c",
             fg="cyan",
         )
     assert (

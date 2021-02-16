@@ -1,4 +1,6 @@
-[![Docker publish](https://github.com/brndnmtthws/thetagang/workflows/Docker%20publish/badge.svg)](https://hub.docker.com/r/brndnmtthws/thetagang) [![Python Publish](https://github.com/brndnmtthws/thetagang/workflows/Python%20Publish/badge.svg)](https://pypi.org/project/thetagang/) [![Docker Pulls](https://img.shields.io/docker/pulls/brndnmtthws/thetagang)](https://hub.docker.com/r/brndnmtthws/thetagang) [![PyPI download month](https://img.shields.io/pypi/dm/thetagang?label=PyPI%20downloads)](https://pypi.python.org/pypi/thetagang/) [Matrix chat](https://matrix.to/#/#thetagang:frens.io)
+[![Docker publish](https://github.com/brndnmtthws/thetagang/workflows/Docker%20publish/badge.svg)](https://hub.docker.com/r/brndnmtthws/thetagang) [![Python Publish](https://github.com/brndnmtthws/thetagang/workflows/Python%20Publish/badge.svg)](https://pypi.org/project/thetagang/) [![Docker Pulls](https://img.shields.io/docker/pulls/brndnmtthws/thetagang)](https://hub.docker.com/r/brndnmtthws/thetagang) [![PyPI download month](https://img.shields.io/pypi/dm/thetagang?label=PyPI%20downloads)](https://pypi.python.org/pypi/thetagang/)
+
+[💬 Join the Matrix chat, we can get money together](https://matrix.to/#/#thetagang:frens.io).
 
 # Θ ThetaGang Θ
 
@@ -18,7 +20,7 @@ over there](https://www.twitch.tv/letsmakestuff).
 
 ## How it works
 
-You should start by reading [the Reddit
+Start by reading [the Reddit
 post](https://www.reddit.com/r/options/comments/a36k4j/the_wheel_aka_triple_income_strategy_explained/)
 to get some background.
 
@@ -26,7 +28,8 @@ The strategy, as implemented here, does a few things differently from the one
 described in the post above. For one, it's intended to be used to augment a
 typical index-fund based portfolio with specific asset allocations. For
 example, you might want to use a 60/40 portfolio with SPY (S&P500 fund) and
-TLT (20 year treasury fund).
+TLT (20 year treasury fund). This strategy reduces risk, but may also limit
+gains from big market swingsn.
 
 The main difference between ThetaGang and simply buying and holding index
 funds is that this script will attempt to harvest volatility by selling
@@ -46,8 +49,12 @@ acceptable contracts are available, enough shares needed, etc).
 
 ThetaGang will continue to roll any open option positions indefinitely, with
 the only exception being ITM puts. Once puts are in the money, they will be
-ignored until they expire and are execised (after which you will own the
+ignored until they expire and are exercised (after which you will own the
 underlying).
+
+If puts are excercised due to being ITM at expiration, you will own the
+stock, and ThetaGang switches from writing puts to writing calls at a strike
+at least as high as the average cost of the stock held.
 
 Please note: this strategy is based on the assumption that implied volatility
 is, on average, always higher than realized volatility. In cases where this
@@ -80,6 +87,16 @@ and I suggest starting with resources such as CBOE's BXM and BXDM indices,
 and comparing those to SPX. I've had a lot of people complain because "that
 strategy isn't better than buy and hold BRUH"–let me assure you, that is not
 my goal with this.
+
+There are conflicting opinions about whether selling options is good or bad,
+more or less risky, yadda yadda, but generally the risk profile for covered
+calls and naked puts is no worse than the worst case for simply holding an
+ETF or stock. In fact, I'd argue that selling a naked put is better than
+buying SPY with a limit order, because at least if SPY goes to zero you keep
+the premium from selling the option. The main downside is that returns are
+capped on the upside. Depending on your goals, this may not matter. If you're
+like me, then you'd rather have consistent returns and give up a little bit
+of potential upside.
 
 Generally speaking, the point of selling options is not to exceed the returns
 of the underlying, but rather to reduce risk. Reducing risk is an important
@@ -119,7 +136,7 @@ call capitalism works.
 *Before running ThetaGang, you should set up an IBKR paper account to test the
 code.*
 
-```shell
+```console
 $ pip install thetagang
 ```
 
@@ -131,11 +148,11 @@ much, consider [running ThetaGang with Docker](#running-with-docker).
 
 ## Usage
 
-```shell
+```console
 $ thetagang -h
 ```
 
-## Running with Docker
+## Up and Running with Docker
 
 My preferred way for running ThetaGang is to use a cronjob to execute Docker
 commands. I've built a Docker image as part of this project, which you can
@@ -148,14 +165,59 @@ configuration](https://github.com/IbcAlpha/IBC/blob/master/userguide.md) and
 [`ibc-config.ini`](/ibc-config.ini) included in this repo for your convenience.
 
 The easiest way to get the config files into the container is by mounting a
-volume. For example, you can use the following command:
+volume.
 
-```shell
-$ docker run --rm -it \
-    -v ~/ibc:/ibc \
-    brndnmtthws/thetagang:latest \
-    --config /ibc/thetagang.toml
+To get started, grab a copy of `thetagang.toml` and `config.ini`:
+
+```console
+$ mkdir ~/thetagang
+$ cd ~/thetagang
+$ curl -Lq https://raw.githubusercontent.com/brndnmtthws/thetagang/main/thetagang.toml -o ~/thetagang/thetagang.toml
+$ curl -Lq https://raw.githubusercontent.com/brndnmtthws/thetagang/main/ibc-config.ini -o ~/thetagang/config.ini
 ```
+
+Edit `~/thetagang/thetagang.toml` to suit your needs. Pay particular
+attention to the symbols and weights. At a minimum, you must change the
+username, password, and account number. You may also want to change the
+trading move from paper to live when needed.
+
+Now, to run ThetaGang with Docker:
+
+```console
+$ docker run --rm -i \
+    -v ~/thetagang:/etc/thetagang \
+    brndnmtthws/thetagang:latest \
+    --config /etc/thetagang/thetagang.toml
+```
+
+Lastly, to run ThetaGang as a daily cronjob Monday to Friday at 9am, add
+something like this to your crontab (on systems with a cron installation, use
+`crontab -e` to edit your crontab):
+
+```crontab
+0 9 * * 1-5 docker run --rm -i -v ~/ibc:/etc/thetagang brndnmtthws/thetagang:latest --config /etc/thetagang/thetagang.toml
+```
+
+## Determining which ETFs or stocks to run ThetaGang with
+
+I leave this as an exercise to the reader, however I will provide a few
+recommendations and resources:
+
+### Recommendations
+
+* Stick with high volume ETFs or stocks
+* Careful with margin usage, you'll want to calculate the worst case scenario
+  and provide plenty of cushion for yourself based on your portfolio
+
+
+### Resources
+
+* For discussions about selling options, check out
+  [r/thetagang](https://www.reddit.com/r/thetagang/)
+* For backtesting portfolios, you can use [this
+  tool](https://www.portfoliovisualizer.com/backtest-portfolio) and [this
+  tool](https://www.portfoliovisualizer.com/optimize-portfolio) to get an idea
+  of drawdown and typical volatility
 
 ## Development
 
@@ -175,3 +237,7 @@ You are now ready to make a splash! 🐳
 If you like what you see but want something different, I am willing
 to work on bespoke or custom trading bots for a fee. Reach out
 to me directly through my GitHub profile.
+
+## Stargazers over time
+
+[![Stargazers over time](https://starchart.cc/brndnmtthws/thetagang.svg)](https://starchart.cc/brndnmtthws/thetagang)

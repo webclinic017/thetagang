@@ -14,7 +14,7 @@ number = "DU1234567"
 # Cancel any existing orders for the symbols configured at startup
 cancel_orders = true
 
-# Maximum amount of margin to use, as a percentage of net liquidation. IB lets
+# Maximum amount of margin to use, as a ratio of net liquidation. IB lets
 # you use varying amounts of margin, depending on the assets. To use up to 4x
 # margin, set this to 4. It's recommended you always leave some additional
 # cushion. IB will start to close positions if you go below certain thresholds
@@ -42,27 +42,49 @@ strikes = 50
 # Roll when P&L reaches 90%
 pnl = 0.9
 
-# Or when there are <= 15 days to expiry
+# Or, roll options when there are <= 15 days to expiry and P&L is at least
+# min_pnl (min_pnl defaults to 0)
+#
+# NOTE: For cases where an option ends up deep ITM, notably when selling
+# covered calls, it's possible that the P&L would be significantly negative,
+# i.e., -100%. If you want to roll anyway in these situations, set min_pnl to a
+# negative value such as -1 (for -100%).
 dte = 15
+min_pnl = 0.0
 
-  [roll_when.calls]
-  # Roll calls to the next expiration even if they're in the money. Defaults to
-  # true if not specified.
-  itm = true
+[roll_when.calls]
+# Roll calls to the next expiration even if they're in the money. Defaults to
+# true if not specified.
+itm = true
 
-  [roll_when.puts]
-  # Roll puts if they're in the money. Defaults to false if not specified.
-  itm = false
+[roll_when.puts]
+# Roll puts if they're in the money. Defaults to false if not specified.
+itm = false
 
 [target]
 # Target 45 or more days to expiry
 dte = 45
 
-# Target delta of 0.3 or less
+# Target delta of 0.3 or less. Defaults to 0.3 if not specified.
 delta = 0.3
+
+# When writing new contracts (either covered calls or naked puts), never write
+# more than this number of contracts at once. This can be useful to spread the
+# contracts out over time in order to protect yourself from large swings. This
+# value does not affect rolling existing contracts to the next expiration.
+# Defaults to 15 if not specified.
+maximum_new_contracts = 15
 
 # Minimum amount of open interest for a contract to qualify
 minimum_open_interest = 10
+
+# Optional: specify delta separately for puts/calls. Takes precedent over
+# target.delta.
+#
+#  [target.puts]
+#  delta = 0.5
+#  [target.calls]
+#  delta = 0.3
 
 [symbols]
 
@@ -76,32 +98,46 @@ minimum_open_interest = 10
 #  1) Have sufficient trading volume for the underlying
 #  2) Have standard options contracts (100 shares per contract)
 #  3) Have options with sufficient open interest and trading volume
-  [symbols.SPY]
-  weight = 0.4
+#
+# The target delta may also be specified per-symbol, and takes precedence over
+# `target.delta` or `target.puts/calls.delta`. You can specify a value for the
+# symbol, or override individually for puts/calls.
+[symbols.SPY]
+weight = 0.4
 
-  [symbols.QQQ]
-  weight = 0.3
+[symbols.QQQ]
+weight = 0.3
 
-  [symbols.TLT]
-  weight = 0.3
+[symbols.QQQ.puts]
+# Override delta just for QQQ puts
+delta = 0.5
+
+[symbols.TLT]
+weight = 0.3
+# Override delta for this particular symbol, for both puts and calls.
+delta = 0.4
 
 [ib_insync]
-logfile = 'ib_insync.log'
+logfile = '/etc/thetagang/ib_insync.log'
 
 [ibc]
 # IBC configuration parameters. See
 # https://ib-insync.readthedocs.io/api.html#ibc for details.
-gateway     = true
-ibcPath     = '/opt/ibc'
-password    = 'demo'
+gateway = true
+ibcPath = '/opt/ibc'
 tradingMode = 'paper'
-userid      = 'demo'
+
+password = 'demo'
+userid = 'demo'
+
 # Change this to point to your config.ini for IBC
 ibcIni = '/etc/thetagang/config.ini'
 
+# Change or unset this to use something other than the Docker bundled OpenJDK.
+javaPath = '/opt/java/openjdk/bin'
+
 # twsPath         = ''
 # twsSettingsPath = ''
-# javaPath        = ''
 # fixuserid       = ''
 # fixpassword     = ''
 
@@ -109,17 +145,17 @@ ibcIni = '/etc/thetagang/config.ini'
 # Watchdog configuration params. See
 # https://ib-insync.readthedocs.io/api.html#watchdog for details.
 appStartupTime = 30
-appTimeout     = 20
-clientId       = 1
+appTimeout = 20
+clientId = 1
 connectTimeout = 2
-host           = '127.0.0.1'
-port           = 4002
-probeTimeout   = 4
-readonly       = false
-retryDelay     = 2
+host = '127.0.0.1'
+port = 4002
+probeTimeout = 4
+readonly = false
+retryDelay = 2
 
-  [watchdog.probeContract]
-  currency = 'USD'
-  exchange = 'SMART'
-  secType  = 'STK'
-  symbol   = 'SPY'
+[watchdog.probeContract]
+currency = 'USD'
+exchange = 'SMART'
+secType = 'STK'
+symbol = 'SPY'

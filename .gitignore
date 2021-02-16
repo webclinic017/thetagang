@@ -1,4 +1,8 @@
 .vscode/
+ibc.log
+
+# Ignore tws installer dir
+tws/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

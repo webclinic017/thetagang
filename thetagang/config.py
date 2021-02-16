@@ -3,6 +3,9 @@ import math
 import click
 from schema import And, Optional, Schema, Use
 
+import thetagang.config_defaults as config_defaults
+from thetagang.dict_merge import dict_merge
+
 
 def normalize_config(config):
     # Do any pre-processing necessary to the config here, such as handling
@@ -18,7 +21,11 @@ def normalize_config(config):
         # TWS version is pinned to latest stable, delete any existing config if it's present
         del config["ibc"]["twsVersion"]
 
-    return config
+    return apply_default_values(config)
+
+
+def apply_default_values(config):
+    return dict_merge(config_defaults.DEFAULT_CONFIG, config)
 
 
 def validate_config(config):
@@ -40,6 +47,7 @@ def validate_config(config):
             "roll_when": {
                 "pnl": And(float, lambda n: 0 <= n <= 1),
                 "dte": And(int, lambda n: 0 <= n),
+                "min_pnl": float,
                 Optional("calls"): {
                     "itm": bool,
                 },
@@ -50,9 +58,27 @@ def validate_config(config):
             "target": {
                 "dte": And(int, lambda n: 0 <= n),
                 "delta": And(float, lambda n: 0 <= n <= 1),
+                "maximum_new_contracts": And(int, lambda n: 1 <= n),
                 "minimum_open_interest": And(int, lambda n: 0 <= n),
+                Optional("calls"): {
+                    "delta": And(float, lambda n: 0 <= n <= 1),
+                },
+                Optional("puts"): {
+                    "delta": And(float, lambda n: 0 <= n <= 1),
+                },
             },
-            "symbols": {object: {"weight": And(float, lambda n: 0 <= n <= 1)}},
+            "symbols": {
+                object: {
+                    "weight": And(float, lambda n: 0 <= n <= 1),
+                    Optional("delta"): And(float, lambda n: 0 <= n <= 1),
+                    Optional("calls"): {
+                        "delta": And(float, lambda n: 0 <= n <= 1),
+                    },
+                    Optional("puts"): {
+                        "delta": And(float, lambda n: 0 <= n <= 1),
+                    },
+                }
+            },
             Optional("ib_insync"): {Optional("logfile"): And(str, len)},
             "ibc": {
                 Optional("password"): And(str, len),

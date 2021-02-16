@@ -8,6 +8,7 @@ from ib_insync.order import LimitOrder, Order
 from thetagang.util import (
     account_summary_to_dict,
     count_option_positions,
+    get_target_delta,
     justify,
     midpoint_or_market_price,
     portfolio_positions_to_dict,
@@ -48,14 +49,14 @@ class PortfolioManager:
     def wait_for_midpoint_price(self, ticker):
         while_n_times(
             lambda: util.isNan(ticker.midpoint()),
-            lambda: self.ib.waitOnUpdate(timeout=2),
+            lambda: self.ib.waitOnUpdate(timeout=3),
             10,
         )
 
     def wait_for_market_price(self, ticker):
         while_n_times(
             lambda: util.isNan(ticker.marketPrice()),
-            lambda: self.ib.waitOnUpdate(timeout=2),
+            lambda: self.ib.waitOnUpdate(timeout=3),
             10,
         )
 
@@ -78,16 +79,26 @@ class PortfolioManager:
         dte = option_dte(put.contract.lastTradeDateOrContractMonth)
         pnl = position_pnl(put)
 
-        if dte <= self.config["roll_when"]["dte"]:
-            click.secho(
-                f"  {put.contract.localSymbol} can be rolled because DTE of {dte} is <= {self.config['roll_when']['dte']}",
-                fg="blue",
-            )
-            return True
+        roll_when_dte = self.config["roll_when"]["dte"]
+        roll_when_pnl = self.config["roll_when"]["pnl"]
+        roll_when_min_pnl = self.config["roll_when"]["min_pnl"]
 
-        if pnl >= self.config["roll_when"]["pnl"]:
+        if dte <= roll_when_dte:
+            if pnl >= roll_when_min_pnl:
+                click.secho(
+                    f"  {put.contract.localSymbol} can be rolled because DTE of {dte} is <= {self.config['roll_when']['dte']} and P&L of {round(pnl * 100, 1)}% is >= {round(roll_when_min_pnl * 100, 1)}%",
+                    fg="blue",
+                )
+                return True
+            else:
+                click.secho(
+                    f"  {put.contract.localSymbol} can't be rolled because P&L of {round(pnl * 100, 1)}% is < {round(roll_when_min_pnl * 100, 1)}%",
+                    fg="red",
+                )
+
+        if pnl >= roll_when_pnl:
             click.secho(
-                f"  {put.contract.localSymbol} can be rolled because P&L of {round(pnl * 100, 1)}% is >= {round(self.config['roll_when']['pnl'] * 100, 1)}",
+                f"  {put.contract.localSymbol} can be rolled because P&L of {round(pnl * 100, 1)}% is >= {round(roll_when_pnl * 100, 1)}",
                 fg="blue",
             )
             return True
@@ -113,16 +124,26 @@ class PortfolioManager:
         dte = option_dte(call.contract.lastTradeDateOrContractMonth)
         pnl = position_pnl(call)
 
-        if dte <= self.config["roll_when"]["dte"]:
-            click.secho(
-                f"{call.contract.localSymbol} can be rolled because DTE of {dte} is <= {self.config['roll_when']['dte']}",
-                fg="blue",
-            )
-            return True
+        roll_when_dte = self.config["roll_when"]["dte"]
+        roll_when_pnl = self.config["roll_when"]["pnl"]
+        roll_when_min_pnl = self.config["roll_when"]["min_pnl"]
 
-        if pnl >= self.config["roll_when"]["pnl"]:
+        if dte <= roll_when_dte:
+            if pnl >= roll_when_min_pnl:
+                click.secho(
+                    f"  {call.contract.localSymbol} can be rolled because DTE of {dte} is <= {self.config['roll_when']['dte']} and P&L of {round(pnl * 100, 1)}% is >= {round(roll_when_min_pnl * 100, 1)}%",
+                    fg="blue",
+                )
+                return True
+            else:
+                click.secho(
+                    f"  {call.contract.localSymbol} can't be rolled because P&L of {round(pnl * 100, 1)}% is < {round(roll_when_min_pnl * 100, 1)}%",
+                    fg="red",
+                )
+
+        if pnl >= roll_when_pnl:
             click.secho(
-                f"{call.contract.localSymbol} can be rolled because P&L of {round(pnl * 100, 1)}% is >= {round(self.config['roll_when']['pnl'] * 100, 1)}",
+                f"  {call.contract.localSymbol} can be rolled because P&L of {round(pnl * 100, 1)}% is >= {round(roll_when_pnl * 100, 1)}",
                 fg="blue",
             )
             return True
@@ -198,7 +219,13 @@ class PortfolioManager:
         click.echo()
         for symbol in portfolio_positions.keys():
             click.secho(f"  {symbol}:", fg="cyan")
-            for p in portfolio_positions[symbol]:
+            sorted_positions = sorted(
+                portfolio_positions[symbol],
+                key=lambda p: option_dte(p.contract.lastTradeDateOrContractMonth)
+                if isinstance(p.contract, Option)
+                else 0,
+            )
+            for p in sorted_positions:
                 if isinstance(p.contract, Stock):
                     pnl = round(position_pnl(p) * 100, 2)
                     click.secho(
@@ -212,7 +239,7 @@ class PortfolioManager:
                         return "Call" if p.contract.right.startswith("C") else "Put "
 
                     click.secho(
-                        f"    {p_or_c(p)}  Qty={int(p.position)} Price={round(p.marketPrice, 2)} Value={round(p.marketValue,2)} Cost={round(p.averageCost * p.position,2)} P&L={pnl}% Strike={p.contract.strike} Exp={p.contract.lastTradeDateOrContractMonth}",
+                        f"    {p_or_c(p)}  Qty={int(p.position)} Price={round(p.marketPrice, 2)} Value={round(p.marketValue,2)} Cost={round(p.averageCost * p.position,2)} P&L={pnl}% Strike={p.contract.strike} DTE={option_dte(p.contract.lastTradeDateOrContractMonth)} Exp={p.contract.lastTradeDateOrContractMonth}",
                         fg="cyan",
                     )
                 else:
@@ -299,13 +326,26 @@ class PortfolioManager:
                     ]
                 )
             )
+            min_strike = math.ceil(
+                max(
+                    [
+                        p.averageCost
+                        for p in portfolio_positions[symbol]
+                        if isinstance(p.contract, Stock)
+                    ]
+                )
+            )
 
             target_calls = stock_count // 100
 
-            calls_to_write = target_calls - call_count
+            maximum_new_contracts = self.config["target"]["maximum_new_contracts"]
+            calls_to_write = min([target_calls - call_count, maximum_new_contracts])
 
             if calls_to_write > 0:
-                click.secho(f"Need to write {calls_to_write} for {symbol}", fg="green")
+                click.secho(
+                    f"Need to write {calls_to_write} for {symbol}, capped at {maximum_new_contracts}, at or above strike price {min_strike}",
+                    fg="green",
+                )
                 self.write_calls(symbol, calls_to_write)
 
     def wait_for_trade_submitted(self, trade):
@@ -317,13 +357,13 @@ class PortfolioManager:
                 "ApiCancelled",
                 "Cancelled",
             ],
-            lambda: self.ib.waitOnUpdate(timeout=2),
+            lambda: self.ib.waitOnUpdate(timeout=3),
             10,
         )
         return trade
 
-    def write_calls(self, symbol, quantity):
-        sell_ticker = self.find_eligible_contracts(symbol, "C")
+    def write_calls(self, symbol, quantity, min_strike):
+        sell_ticker = self.find_eligible_contracts(symbol, "C", min_strike)
 
         self.wait_for_midpoint_price(sell_ticker)
 
@@ -437,7 +477,7 @@ class PortfolioManager:
 
         click.echo()
 
-        # Figure out how many addition puts are needed, if they're needed
+        # Figure out how many additional puts are needed, if they're needed
         for symbol in target_additional_quantity.keys():
             additional_quantity = target_additional_quantity[symbol]
             # NOTE: it's possible there are non-standard option contract sizes,
@@ -446,10 +486,13 @@ class PortfolioManager:
             if additional_quantity >= 100:
                 put_count = count_option_positions(symbol, portfolio_positions, "P")
                 target_put_count = additional_quantity // 100
-                puts_to_write = target_put_count - put_count
+                maximum_new_contracts = self.config["target"]["maximum_new_contracts"]
+                puts_to_write = min(
+                    [target_put_count - put_count, maximum_new_contracts]
+                )
                 if puts_to_write > 0:
                     click.secho(
-                        f"Preparing to write additional {puts_to_write} puts to purchase {symbol}",
+                        f"Preparing to write additional {puts_to_write} puts to purchase {symbol}, capped at {maximum_new_contracts}",
                         fg="cyan",
                     )
                     self.write_puts(symbol, puts_to_write)
@@ -519,7 +562,7 @@ class PortfolioManager:
             click.secho("Order submitted", fg="green")
             click.secho(f"{trade}", fg="green")
 
-    def find_eligible_contracts(self, symbol, right):
+    def find_eligible_contracts(self, symbol, right, min_strike=0):
         click.echo()
         click.secho(
             f"Searching option chain for symbol={symbol} right={right}, this can take a while...",
@@ -541,7 +584,7 @@ class PortfolioManager:
             if right.startswith("P"):
                 return strike <= tickerValue
             if right.startswith("C"):
-                return strike >= tickerValue
+                return strike >= tickerValue and strike >= min_strike
             return False
 
         chain_expirations = self.config["option_chains"]["expirations"]
@@ -579,6 +622,9 @@ class PortfolioManager:
 
         tickers = self.ib.reqTickers(*contracts)
 
+        # Filter out tickers which don't have a midpoint price
+        tickers = [t for t in tickers if not util.isNan(t.midpoint())]
+
         def open_interest_is_valid(ticker):
             ticker = self.ib.reqMktData(ticker.contract, genericTickList="101")
 
@@ -589,7 +635,7 @@ class PortfolioManager:
                     return util.isNan(ticker.callOpenInterest)
 
             while_n_times(
-                open_interest_is_not_ready, lambda: self.ib.waitOnUpdate(timeout=2), 10
+                open_interest_is_not_ready, lambda: self.ib.waitOnUpdate(timeout=3), 10
             )
             self.ib.cancelMktData(ticker.contract)
 
@@ -609,8 +655,9 @@ class PortfolioManager:
         def delta_is_valid(ticker):
             return (
                 ticker.modelGreeks
-                and ticker.modelGreeks.delta
-                and abs(ticker.modelGreeks.delta) <= self.config["target"]["delta"]
+                and not util.isNan(ticker.modelGreeks.delta)
+                and abs(ticker.modelGreeks.delta)
+                <= get_target_delta(self.config, symbol, right)
             )
 
         # Filter by delta and open interest

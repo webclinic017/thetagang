@@ -53,6 +53,8 @@ def count_option_positions(symbol, portfolio_positions, right):
 
 
 def while_n_times(pred, body, remaining):
+    if remaining <= 0:
+        raise "Exhausted retries waiting on predicate. This shouldn't happen. "
     if pred() and remaining > 0:
         body()
         while_n_times(pred, body, remaining - 1)
@@ -66,3 +68,14 @@ def midpoint_or_market_price(ticker):
         return ticker.marketPrice()
 
     return ticker.midpoint()
+
+
+def get_target_delta(config, symbol, right):
+    p_or_c = "calls" if right.startswith("C") else "puts"
+    if p_or_c in config["symbols"][symbol]:
+        return config["symbols"][symbol][p_or_c]["delta"]
+    if "delta" in config["symbols"][symbol]:
+        return config["symbols"][symbol]["delta"]
+    if p_or_c in config["target"]:
+        return config["target"][p_or_c]["delta"]
+    return config["target"]["delta"]
