@@ -8,22 +8,16 @@ from ib_insync.contract import Contract, Stock
 from ib_insync.objects import Position
 
 from thetagang.config import normalize_config, validate_config
-from thetagang.util import get_target_delta
+from thetagang.util import get_strike_limit, get_target_delta
 
 from .portfolio_manager import PortfolioManager
-from .util import (
-    account_summary_to_dict,
-    justify,
-    portfolio_positions_to_dict,
-    position_pnl,
-    to_camel_case,
-)
 
 util.patchAsyncio()
 
 
 def start(config):
     import toml
+
     import thetagang.config_defaults as config_defaults
 
     with open(config, "r") as f:
@@ -65,6 +59,17 @@ def start(config):
     )
 
     click.echo()
+    click.secho(f"  When contracts are ITM:", fg="green")
+    click.secho(
+        f"    Roll puts               = {config['roll_when']['puts']['itm']}",
+        fg="cyan",
+    )
+    click.secho(
+        f"    Roll calls              = {config['roll_when']['calls']['itm']}",
+        fg="cyan",
+    )
+
+    click.echo()
     click.secho(f"  Write options with targets of:", fg="green")
     click.secho(f"    Days to expiry          >= {config['target']['dte']}", fg="cyan")
     click.secho(
@@ -93,10 +98,19 @@ def start(config):
     click.secho(f"  Symbols:", fg="green")
     for s in config["symbols"].keys():
         c = config["symbols"][s]
-        c_delta = get_target_delta(config, s, "C")
-        p_delta = get_target_delta(config, s, "P")
+        c_delta = f"{get_target_delta(config, s, 'C'):.2f}".rjust(4)
+        p_delta = f"{get_target_delta(config, s, 'P'):.2f}".rjust(4)
+        weight = f"{c['weight']:.2f}".rjust(4)
+        weight_p = f"{(c['weight'] * 100):.1f}".rjust(4)
+        strike_limits = ""
+        c_limit = get_strike_limit(config, s, "C")
+        p_limit = get_strike_limit(config, s, "P")
+        if c_limit:
+            strike_limits += f", call strike >= ${c_limit:.2f}"
+        if p_limit:
+            strike_limits += f", put strike <= ${p_limit:.2f}"
         click.secho(
-            f"    {s}, weight = {c['weight']} ({c['weight'] * 100}%), delta = {p_delta}p, {c_delta}c",
+            f"    {s.rjust(5)} weight = {weight} ({weight_p}%), delta = {p_delta}p, {c_delta}c{strike_limits}",
             fg="cyan",
         )
     assert (
@@ -107,7 +121,8 @@ def start(config):
     if config.get("ib_insync", {}).get("logfile"):
         util.logToFile(config["ib_insync"]["logfile"])
 
-    ibc = IBC(978, **config["ibc"])
+    # TWS version is pinned to current stable
+    ibc = IBC(981, **config["ibc"])
 
     def onConnected():
         portfolio_manager.manage()

@@ -61,21 +61,24 @@ def validate_config(config):
                 "maximum_new_contracts": And(int, lambda n: 1 <= n),
                 "minimum_open_interest": And(int, lambda n: 0 <= n),
                 Optional("calls"): {
-                    "delta": And(float, lambda n: 0 <= n <= 1),
+                    Optional("delta"): And(float, lambda n: 0 <= n <= 1),
                 },
                 Optional("puts"): {
-                    "delta": And(float, lambda n: 0 <= n <= 1),
+                    Optional("delta"): And(float, lambda n: 0 <= n <= 1),
                 },
             },
             "symbols": {
                 object: {
                     "weight": And(float, lambda n: 0 <= n <= 1),
+                    Optional("primary_exchange"): And(str, len),
                     Optional("delta"): And(float, lambda n: 0 <= n <= 1),
                     Optional("calls"): {
-                        "delta": And(float, lambda n: 0 <= n <= 1),
+                        Optional("delta"): And(float, lambda n: 0 <= n <= 1),
+                        Optional("strike_limit"): And(float, lambda n: n > 0),
                     },
                     Optional("puts"): {
-                        "delta": And(float, lambda n: 0 <= n <= 1),
+                        Optional("delta"): And(float, lambda n: 0 <= n <= 1),
+                        Optional("strike_limit"): And(float, lambda n: n > 0),
                     },
                 }
             },

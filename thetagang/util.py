@@ -1,4 +1,5 @@
 import math
+from datetime import datetime
 
 from ib_insync import util
 from ib_insync.contract import Option
@@ -28,15 +29,11 @@ def portfolio_positions_to_dict(portfolio_positions):
     return d
 
 
-def justify(s):
-    return s.rjust(12)
-
-
 def position_pnl(position):
     return position.unrealizedPNL / abs(position.averageCost * position.position)
 
 
-def count_option_positions(symbol, portfolio_positions, right):
+def count_short_option_positions(symbol, portfolio_positions, right):
     if symbol in portfolio_positions:
         return math.floor(
             -sum(
@@ -45,6 +42,7 @@ def count_option_positions(symbol, portfolio_positions, right):
                     for p in portfolio_positions[symbol]
                     if isinstance(p.contract, Option)
                     and p.contract.right.startswith(right)
+                    and p.position < 0
                 ]
             )
         )
@@ -52,12 +50,42 @@ def count_option_positions(symbol, portfolio_positions, right):
     return 0
 
 
-def while_n_times(pred, body, remaining):
-    if remaining <= 0:
-        raise "Exhausted retries waiting on predicate. This shouldn't happen. "
-    if pred() and remaining > 0:
+def count_long_option_positions(symbol, portfolio_positions, right):
+    if symbol in portfolio_positions:
+        return math.floor(
+            sum(
+                [
+                    p.position
+                    for p in portfolio_positions[symbol]
+                    if isinstance(p.contract, Option)
+                    and p.contract.right.startswith(right)
+                    and p.position > 0
+                ]
+            )
+        )
+
+    return 0
+
+
+def wait_n_seconds(pred, body, seconds_to_wait, started_at=datetime.now()):
+    diff = datetime.now() - started_at
+    if diff.seconds > seconds_to_wait:
+        raise RuntimeError(
+            "Exhausted retries waiting on predicate. This shouldn't happen."
+        )
+    if pred():
         body()
-        while_n_times(pred, body, remaining - 1)
+        wait_n_seconds(pred, body, seconds_to_wait, started_at)
+
+
+def get_highest_price(ticker):
+    # Returns the highest of either the option model price, the midpoint, or the
+    # market price. The midpoint is usually a bit higher than the IB model's
+    # pricing, but we want to avoid leaving money on the table in cases where
+    # the spread might be messed up. This may in some cases make it harder for
+    # orders to fill in a given day, but I think that's a reasonable tradeoff to
+    # avoid leaving money on the table.
+    return max([midpoint_or_market_price(ticker), ticker.modelGreeks.optPrice])
 
 
 def midpoint_or_market_price(ticker):
@@ -72,10 +100,23 @@ def midpoint_or_market_price(ticker):
 
 def get_target_delta(config, symbol, right):
     p_or_c = "calls" if right.startswith("C") else "puts"
-    if p_or_c in config["symbols"][symbol]:
+    if (
+        p_or_c in config["symbols"][symbol]
+        and "delta" in config["symbols"][symbol][p_or_c]
+    ):
         return config["symbols"][symbol][p_or_c]["delta"]
     if "delta" in config["symbols"][symbol]:
         return config["symbols"][symbol]["delta"]
     if p_or_c in config["target"]:
         return config["target"][p_or_c]["delta"]
     return config["target"]["delta"]
+
+
+def get_strike_limit(config, symbol, right):
+    p_or_c = "calls" if right.startswith("C") else "puts"
+    if (
+        p_or_c in config["symbols"][symbol]
+        and "strike_limit" in config["symbols"][symbol][p_or_c]
+    ):
+        return config["symbols"][symbol][p_or_c]["strike_limit"]
+    return None

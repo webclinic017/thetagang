@@ -33,6 +33,14 @@ margin_usage = 0.5
 market_data_type = 1
 
 [option_chains]
+# The option chains are lazy loaded, and before you can determine the greeks
+# (delta) or prices, you need to scan the chains. The settings here tell
+# thetagang how many contracts to load. Don't make these values too high, as
+# they will cause the chain scanning process to take too long, and it may fail.
+#
+# If you have issues where thetagang can't find suitable contracts, try
+# increasing these values slightly.
+#
 # Number of expirations to load from option chains
 expirations = 5
 # Number of strikes to load from option chains
@@ -112,10 +120,30 @@ weight = 0.3
 # Override delta just for QQQ puts
 delta = 0.5
 
+# Also, optionally specify a strike limit, for either puts or calls.
+# Interpreted as an upper bound for puts, and a lower bound for calls.
+strike_limit = 1000.0 # never write a put with a strike above $1000
+
+[symbols.QQQ.calls]
+strike_limit = 100.0 # never write a call with a strike below $100
+
 [symbols.TLT]
-weight = 0.3
+weight = 0.2
 # Override delta for this particular symbol, for both puts and calls.
 delta = 0.4
+
+[symbols.ABNB]
+# For symbols that require an exchange, which is typically any company stock,
+# you must specify the primary exchange.
+primary_exchange = "NASDAQ"
+weight = 0.05
+
+# Sometimes you may need to wrap the symbol in quotes.
+[symbols."BRK.B"]
+# For symbols that require an exchange, which is typically any company stock,
+# you must specify the primary exchange.
+primary_exchange = "NYSE"
+weight = 0.05
 
 [ib_insync]
 logfile = '/etc/thetagang/ib_insync.log'
@@ -149,7 +177,7 @@ appTimeout = 20
 clientId = 1
 connectTimeout = 2
 host = '127.0.0.1'
-port = 4002
+port = 7497
 probeTimeout = 4
 readonly = false
 retryDelay = 2

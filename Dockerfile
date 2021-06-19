@@ -1,7 +1,7 @@
-FROM adoptopenjdk/openjdk8:jdk8u262-b10-debian
+FROM adoptopenjdk/openjdk11:debian
 
-RUN apt-get update \
-  && DEBIAN_FRONTEND=noninteractive apt-get install -qy --no-install-recommends \
+RUN apt update \
+  && DEBIAN_FRONTEND=noninteractive apt install -qy --no-install-recommends \
   python3-pip \
   python3-setuptools \
   xvfb \
@@ -10,10 +10,11 @@ RUN apt-get update \
   libxrender1 \
   unzip \
   curl \
+  openjfx \
   && python3 -m pip install --upgrade pip \
   && if test "$(dpkg --print-architecture)" = "armhf" ; then python3 -m pip config set global.extra-index-url https://www.piwheels.org/simple ; fi \
-  && echo 'c079e0ade7e95069e464859197498f0abb4ce277b2f101d7474df4826dcac837  ibc.zip' | tee ibc.zip.sha256 \
-  && curl -qL https://github.com/IbcAlpha/IBC/releases/download/3.8.4-beta.2/IBCLinux-3.8.4-beta.2.zip -o ibc.zip \
+  && echo 'ffccc98102df7750b86a6b77308dcdc3965c4aff1ee7216ba7142cad67a292a0  ibc.zip' | tee ibc.zip.sha256 \
+  && curl -qL https://github.com/IbcAlpha/IBC/releases/download/3.8.7/IBCLinux-3.8.7.zip -o ibc.zip \
   && sha256sum -c ibc.zip.sha256 \
   && unzip ibc.zip -d /opt/ibc \
   && chmod o+x /opt/ibc/*.sh /opt/ibc/*/*.sh \
@@ -29,6 +30,12 @@ ADD entrypoint.bash /src/entrypoint.bash
 
 RUN python3 -m pip install dist/thetagang-*.whl \
   && rm -rf /root/.cache \
-  && rm -rf dist
+  && rm -rf dist \
+  && echo '--module-path /usr/share/openjfx/lib' | tee -a /root/Jts/*/tws.vmoptions \
+  && echo '--add-modules=javafx.base,javafx.controls,javafx.fxml,javafx.graphics,javafx.media,javafx.swing,javafx.web' | tee -a /root/Jts/*/tws.vmoptions \
+  && echo '--add-opens java.desktop/javax.swing=ALL-UNNAMED' | tee -a /root/Jts/*/tws.vmoptions \
+  && echo '--add-opens java.desktop/java.awt=ALL-UNNAMED' | tee -a /root/Jts/*/tws.vmoptions \
+  && echo '--add-opens java.base/java.util=ALL-UNNAMED' | tee -a /root/Jts/*/tws.vmoptions \
+  && echo '--illegal-access=permit' | tee -a /root/Jts/*/tws.vmoptions
 
 ENTRYPOINT [ "/src/entrypoint.bash" ]
