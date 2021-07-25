@@ -67,7 +67,9 @@ def count_long_option_positions(symbol, portfolio_positions, right):
     return 0
 
 
-def wait_n_seconds(pred, body, seconds_to_wait, started_at=datetime.now()):
+def wait_n_seconds(pred, body, seconds_to_wait, started_at=None):
+    if not started_at:
+        started_at = datetime.now()
     diff = datetime.now() - started_at
     if diff.seconds > seconds_to_wait:
         raise RuntimeError(
@@ -93,7 +95,11 @@ def midpoint_or_market_price(ticker):
     # we often prefer the midpoint over the last price. This function pulls the
     # midpoint first, then falls back to marketPrice() if midpoint is nan.
     if util.isNan(ticker.midpoint()):
-        return ticker.marketPrice()
+        if util.isNan(ticker.marketPrice()):
+            # Fallback to the model price
+            return ticker.modelGreeks.optPrice
+        else:
+            return ticker.marketPrice()
 
     return ticker.midpoint()
 
