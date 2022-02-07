@@ -61,7 +61,7 @@ is, on average, always higher than realized volatility. In cases where this
 is not true, this strategy will cause you to lose money.
 
 In the case of deep ITM calls, the bot will prefer to roll the calls to next
-expiration rather than allowing the underlying to get called away. If you
+strike or expiration rather than allowing the underlying to get called away. If you
 don't have adequate buying power available in your account, it's possible
 that the options may get exercised instead of rolling forward and the process
 starts back at the beginning. Please keep in mind this may have tax
@@ -154,7 +154,7 @@ much, consider [running ThetaGang with Docker](#running-with-docker).
 $ thetagang -h
 ```
 
-## Up and Running with Docker
+## Up and running with Docker
 
 My preferred way for running ThetaGang is to use a cronjob to execute Docker
 commands. I've built a Docker image as part of this project, which you can
@@ -186,7 +186,7 @@ trading move from paper to live when needed.
 Now, to run ThetaGang with Docker:
 
 ```console
-$ docker run --rm -i \
+$ docker run --rm -i --net host \
     -v ~/thetagang:/etc/thetagang \
     brndnmtthws/thetagang:latest \
     --config /etc/thetagang/thetagang.toml

@@ -3,9 +3,8 @@
 import asyncio
 
 import click
-from ib_insync import IB, IBC, Index, Watchdog, util
-from ib_insync.contract import Contract, Stock
-from ib_insync.objects import Position
+from ib_insync import IB, IBC, Watchdog, util
+from ib_insync.contract import Contract
 
 from thetagang.config import normalize_config, validate_config
 from thetagang.util import get_strike_limit, get_target_delta
@@ -18,7 +17,7 @@ util.patchAsyncio()
 def start(config):
     import toml
 
-    import thetagang.config_defaults as config_defaults
+    import thetagang.config_defaults as config_defaults  # NOQA
 
     with open(config, "r") as f:
         config = toml.load(f)
@@ -27,10 +26,10 @@ def start(config):
 
     validate_config(config)
 
-    click.secho(f"Config:", fg="green")
+    click.secho("Config:", fg="green")
     click.echo()
 
-    click.secho(f"  Account details:", fg="green")
+    click.secho("  Account details:", fg="green")
     click.secho(
         f"    Number                   = {config['account']['number']}", fg="cyan"
     )
@@ -48,18 +47,24 @@ def start(config):
     )
     click.echo()
 
-    click.secho(f"  Roll options when either condition is true:", fg="green")
+    click.secho("  Roll options when either condition is true:", fg="green")
     click.secho(
         f"    Days to expiry          <= {config['roll_when']['dte']} and P&L >= {config['roll_when']['min_pnl']} ({config['roll_when']['min_pnl'] * 100}%)",
         fg="cyan",
     )
-    click.secho(
-        f"    P&L                     >= {config['roll_when']['pnl']} ({config['roll_when']['pnl'] * 100}%)",
-        fg="cyan",
-    )
+    if "max_dte" in config["roll_when"]:
+        click.secho(
+            f"    P&L                     >= {config['roll_when']['pnl']} ({config['roll_when']['pnl'] * 100}%) and DTE < {config['roll_when']['max_dte']}",
+            fg="cyan",
+        )
+    else:
+        click.secho(
+            f"    P&L                     >= {config['roll_when']['pnl']} ({config['roll_when']['pnl'] * 100}%)",
+            fg="cyan",
+        )
 
     click.echo()
-    click.secho(f"  When contracts are ITM:", fg="green")
+    click.secho("  When contracts are ITM:", fg="green")
     click.secho(
         f"    Roll puts               = {config['roll_when']['puts']['itm']}",
         fg="cyan",
@@ -70,7 +75,7 @@ def start(config):
     )
 
     click.echo()
-    click.secho(f"  Write options with targets of:", fg="green")
+    click.secho("  Write options with targets of:", fg="green")
     click.secho(f"    Days to expiry          >= {config['target']['dte']}", fg="cyan")
     click.secho(
         f"    Default delta           <= {config['target']['delta']}", fg="cyan"
@@ -86,7 +91,7 @@ def start(config):
             fg="cyan",
         )
     click.secho(
-        f"    Maximum new contracts    = {config['target']['maximum_new_contracts']}",
+        f"    Maximum new contracts    = {config['target']['maximum_new_contracts_percent'] * 100}% of buying power",
         fg="cyan",
     )
     click.secho(
@@ -95,13 +100,12 @@ def start(config):
     )
 
     click.echo()
-    click.secho(f"  Symbols:", fg="green")
+    click.secho("  Symbols:", fg="green")
     for s in config["symbols"].keys():
         c = config["symbols"][s]
         c_delta = f"{get_target_delta(config, s, 'C'):.2f}".rjust(4)
         p_delta = f"{get_target_delta(config, s, 'P'):.2f}".rjust(4)
-        weight = f"{c['weight']:.2f}".rjust(4)
-        weight_p = f"{(c['weight'] * 100):.1f}".rjust(4)
+        weight_p = f"{(c['weight'] * 100):.2f}".rjust(4)
         strike_limits = ""
         c_limit = get_strike_limit(config, s, "C")
         p_limit = get_strike_limit(config, s, "P")
@@ -110,11 +114,14 @@ def start(config):
         if p_limit:
             strike_limits += f", put strike <= ${p_limit:.2f}"
         click.secho(
-            f"    {s.rjust(5)} weight = {weight} ({weight_p}%), delta = {p_delta}p, {c_delta}c{strike_limits}",
+            f"    {s.rjust(5)} weight = {weight_p}%, delta = {p_delta}p, {c_delta}c{strike_limits}",
             fg="cyan",
         )
     assert (
-        sum([config["symbols"][s]["weight"] for s in config["symbols"].keys()]) == 1.0
+        round(
+            sum([config["symbols"][s]["weight"] for s in config["symbols"].keys()]), 5
+        )
+        == 1.00000
     )
     click.echo()
 
@@ -122,12 +129,18 @@ def start(config):
         util.logToFile(config["ib_insync"]["logfile"])
 
     # TWS version is pinned to current stable
-    ibc = IBC(981, **config["ibc"])
+    ibc_config = config.get("ibc", {})
+    # Remove any config params that aren't valid keywords for IBC
+    ibc_keywords = {
+        k: ibc_config[k] for k in ibc_config if k not in ["RaiseRequestErrors"]
+    }
+    ibc = IBC(981, **ibc_keywords)
 
     def onConnected():
         portfolio_manager.manage()
 
     ib = IB()
+    ib.RaiseRequestErrors = ibc_config.get("RaiseRequestErrors", False)
     ib.connectedEvent += onConnected
 
     completion_future = asyncio.Future()

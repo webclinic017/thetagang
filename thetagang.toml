@@ -26,6 +26,9 @@ cancel_orders = true
 # The default value uses 50% of your available net liquidation value
 # (i.e., half of your funds). Set this to 1.0 to use all your funds,
 # or 1.5 to use 150% (which may incur margin interest charges).
+#
+# In other words, ThetaGang's buying power is calculated by taking your NLV and
+# multiplying it by margin_usage.
 margin_usage = 0.5
 
 # Market data type (see
@@ -60,6 +63,10 @@ pnl = 0.9
 dte = 15
 min_pnl = 0.0
 
+# Optional: Don't roll contracts when the current DTE is greater than this
+# number of days. This helps avoid cases where you end up rolling out to LEAPs.
+# max_dte = 180
+
 [roll_when.calls]
 # Roll calls to the next expiration even if they're in the money. Defaults to
 # true if not specified.
@@ -76,12 +83,21 @@ dte = 45
 # Target delta of 0.3 or less. Defaults to 0.3 if not specified.
 delta = 0.3
 
-# When writing new contracts (either covered calls or naked puts), never write
-# more than this number of contracts at once. This can be useful to spread the
-# contracts out over time in order to protect yourself from large swings. This
-# value does not affect rolling existing contracts to the next expiration.
-# Defaults to 15 if not specified.
-maximum_new_contracts = 15
+# When writing new contracts (either covered calls or naked puts), or rolling
+# before `roll_when.dte` is reached, never write more than this amount of
+# contracts at once. This can be useful to avoid bunching by spreading contract
+# placement out over time (and possibly expirations) in order to protect
+# yourself from large swings. This value does not affect rolling existing
+# contracts to the next expiration. This value is expressed as a percentage of
+# buying power based on the market price of the underlying ticker, as a range
+# from [0.0-1.0].
+# 
+# Once the `roll_when.dte` date is reached, all the remaining positions are
+# rolled regardless of the current position quantity.
+#
+# Defaults to 5% of buying power. Set this to 1.0 to effectively disable the
+# limit.
+maximum_new_contracts_percent = 0.05
 
 # Minimum amount of open interest for a contract to qualify
 minimum_open_interest = 10
@@ -101,6 +117,11 @@ minimum_open_interest = 10
 # values were chosen as sane values should someone decide to run this code
 # without changes, however it is in no way a recommendation or endorsement.
 #
+# You can specify the weight either as a percentage of your buying power (which
+# is calculated as your NLV * account.margin_usage), or in terms of parts. Parts
+# are summed from all symbols, then the weight is calculated by dividing the
+# parts by the total parts.
+#
 # You should try to choose ETFs or stocks that:
 #
 #  1) Have sufficient trading volume for the underlying
@@ -112,9 +133,13 @@ minimum_open_interest = 10
 # symbol, or override individually for puts/calls.
 [symbols.SPY]
 weight = 0.4
+# OR: specify in terms of parts. Must use either weight or parts, but cannot mix
+# both.
+# parts = 40
 
 [symbols.QQQ]
 weight = 0.3
+# parts = 30
 
 [symbols.QQQ.puts]
 # Override delta just for QQQ puts
@@ -129,6 +154,7 @@ strike_limit = 100.0 # never write a call with a strike below $100
 
 [symbols.TLT]
 weight = 0.2
+# parts = 20
 # Override delta for this particular symbol, for both puts and calls.
 delta = 0.4
 
@@ -137,13 +163,15 @@ delta = 0.4
 # you must specify the primary exchange.
 primary_exchange = "NASDAQ"
 weight = 0.05
+# parts = 5
 
 # Sometimes you may need to wrap the symbol in quotes.
-[symbols."BRK.B"]
+[symbols."BRK B"]
 # For symbols that require an exchange, which is typically any company stock,
 # you must specify the primary exchange.
 primary_exchange = "NYSE"
 weight = 0.05
+# parts = 5
 
 [ib_insync]
 logfile = '/etc/thetagang/ib_insync.log'
@@ -154,6 +182,11 @@ logfile = '/etc/thetagang/ib_insync.log'
 gateway = true
 ibcPath = '/opt/ibc'
 tradingMode = 'paper'
+
+# Set this to true if you want to raise an exception on request errors. Under
+# normal operation this should be false because we often try to make "invalid"
+# requests when scanning option chains for example.
+RaiseRequestErrors = false
 
 password = 'demo'
 userid = 'demo'
