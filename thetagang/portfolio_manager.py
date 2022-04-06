@@ -23,7 +23,7 @@ from .options import option_dte
 # Typically the amount of time needed when waiting on data from the IBKR API.
 # Sometimes it can take a while to retrieve data, and it's lazy-loaded by the
 # API, so getting this number right is largely a matter of guesswork.
-api_response_wait_time = 120
+API_RESPONSE_WAIT_TIME = 120
 
 
 class PortfolioManager:
@@ -42,7 +42,7 @@ class PortfolioManager:
             )
         if "Cancelled" in trade.orderStatus.status:
             click.secho(
-                f"Order cancelled, symbol={trade.contract.symbol} log={trade.orderStatus.log}",
+                f"Order cancelled, symbol={trade.contract.symbol} log={trade.log}",
                 fg="red",
             )
         else:
@@ -77,7 +77,7 @@ class PortfolioManager:
             wait_n_seconds(
                 lambda: util.isNan(ticker.midpoint()),
                 lambda: self.ib.waitOnUpdate(timeout=15),
-                api_response_wait_time,
+                API_RESPONSE_WAIT_TIME,
             )
         except RuntimeError:
             return False
@@ -88,7 +88,7 @@ class PortfolioManager:
             wait_n_seconds(
                 lambda: util.isNan(ticker.marketPrice()),
                 lambda: self.ib.waitOnUpdate(timeout=15),
-                api_response_wait_time,
+                API_RESPONSE_WAIT_TIME,
             )
         except:
             return False
@@ -123,7 +123,7 @@ class PortfolioManager:
             wait_n_seconds(
                 lambda: any([util.isNan(t.midpoint()) for t in ticker_list]),
                 lambda: self.ib.waitOnUpdate(timeout=15),
-                30,
+                API_RESPONSE_WAIT_TIME,
             )
         except RuntimeError:
             pass
@@ -443,7 +443,7 @@ class PortfolioManager:
                     "Pending" in trade.orderStatus.status for trade in self.orders
                 ),
                 lambda: self.ib.waitOnUpdate(timeout=15),
-                api_response_wait_time,
+                API_RESPONSE_WAIT_TIME,
             )
 
             click.echo()
@@ -526,6 +526,13 @@ class PortfolioManager:
 
             target_calls = max([0, stock_count // 100])
             new_contracts_needed = target_calls - call_count
+            excess_calls = call_count - target_calls
+
+            if excess_calls > 0:
+                click.secho(
+                    f"Warning: {symbol} has {excess_calls} excess covered calls stock_count={stock_count}, call_count={call_count}",
+                    fg="yellow",
+                )
 
             maximum_new_contracts = self.get_maximum_new_contracts_for(
                 symbol,
@@ -541,12 +548,20 @@ class PortfolioManager:
                     f"Will write {calls_to_write} calls, {new_contracts_needed} needed for {symbol}, capped at {maximum_new_contracts}, at or above strike ${strike_limit} (target_calls={target_calls}, call_count={call_count})",
                     fg="green",
                 )
-                self.write_calls(
-                    symbol,
-                    self.get_primary_exchange(symbol),
-                    calls_to_write,
-                    strike_limit,
-                )
+                try:
+                    self.write_calls(
+                        symbol,
+                        self.get_primary_exchange(symbol),
+                        calls_to_write,
+                        strike_limit,
+                    )
+                except RuntimeError as e:
+                    click.echo()
+                    click.secho(str(e), fg="red")
+                    click.secho(
+                        f"Failed to write calls for {symbol}. Continuing anyway...",
+                        fg="yellow",
+                    )
 
     def write_calls(self, symbol, primary_exchange, quantity, strike_limit):
         sell_ticker = self.find_eligible_contracts(
@@ -555,7 +570,7 @@ class PortfolioManager:
 
         if not self.wait_for_midpoint_price(sell_ticker):
             click.secho(
-                "Couldn't get midpoint price for contract={sell_ticker}, skipping for now",
+                f"Couldn't get midpoint price for {sell_ticker}, skipping for now",
                 fg="red",
             )
             return
@@ -579,7 +594,7 @@ class PortfolioManager:
             click.secho(f"{trade}", fg="green")
         except RuntimeError as e:
             click.echo()
-            click.secho(e, fg="red")
+            click.secho(str(e), fg="red")
             click.secho(
                 "Order trade submission seems to have failed, or a response wasn't received in time. Continuing anyway...",
                 fg="yellow",
@@ -592,7 +607,7 @@ class PortfolioManager:
             )
         except RuntimeError as e:
             click.echo()
-            click.secho(e, fg="red")
+            click.secho(str(e), fg="red")
             click.secho(
                 f"Finding eligible contracts for {symbol} failed. Continuing anyway...",
                 fg="yellow",
@@ -737,97 +752,116 @@ class PortfolioManager:
 
     def roll_positions(self, positions, right, account_summary, portfolio_positions={}):
         for position in positions:
-            symbol = position.contract.symbol
-            strike_limit = get_strike_limit(self.config, symbol, right)
-            if right.startswith("C"):
-                strike_limit = math.ceil(
-                    max(
-                        [strike_limit or 0]
-                        + [
-                            p.averageCost
-                            for p in portfolio_positions[symbol]
-                            if isinstance(p.contract, Stock)
-                        ]
+            try:
+                symbol = position.contract.symbol
+                strike_limit = get_strike_limit(self.config, symbol, right)
+                if right.startswith("C"):
+                    strike_limit = math.ceil(
+                        max(
+                            [strike_limit or 0]
+                            + [
+                                p.averageCost
+                                for p in portfolio_positions[symbol]
+                                if isinstance(p.contract, Stock)
+                            ]
+                        )
                     )
+
+                sell_ticker = self.find_eligible_contracts(
+                    symbol,
+                    self.get_primary_exchange(symbol),
+                    right,
+                    strike_limit,
+                    exclude_expirations_before=position.contract.lastTradeDateOrContractMonth,
+                    exclude_first_exp_strike=position.contract.strike,
                 )
 
-            sell_ticker = self.find_eligible_contracts(
-                symbol,
-                self.get_primary_exchange(symbol),
-                right,
-                strike_limit,
-                excluded_expiration=position.contract.lastTradeDateOrContractMonth,
-                excluded_strikes=[position.contract.strike]
-            )
+                qty_to_roll = abs(position.position)
+                maximum_new_contracts = self.get_maximum_new_contracts_for(
+                    symbol,
+                    self.get_primary_exchange(symbol),
+                    account_summary,
+                )
+                from_dte = option_dte(position.contract.lastTradeDateOrContractMonth)
+                roll_when_dte = self.config["roll_when"]["dte"]
+                if from_dte > roll_when_dte:
+                    qty_to_roll = min([qty_to_roll, maximum_new_contracts])
 
-            quantity = abs(position.position)
-            maximum_new_contracts = self.get_maximum_new_contracts_for(
-                symbol,
-                self.get_primary_exchange(symbol),
-                account_summary,
-            )
-            dte = option_dte(position.contract.lastTradeDateOrContractMonth)
-            roll_when_dte = self.config["roll_when"]["dte"]
-            if dte > roll_when_dte:
-                quantity = min([quantity, maximum_new_contracts])
+                position.contract.exchange = "SMART"
+                buy_ticker = self.get_ticker_for(position.contract, midpoint=True)
 
-            position.contract.exchange = "SMART"
-            buy_ticker = self.get_ticker_for(position.contract, midpoint=True)
+                price = midpoint_or_market_price(buy_ticker) - midpoint_or_market_price(
+                    sell_ticker
+                )
 
-            price = midpoint_or_market_price(buy_ticker) - midpoint_or_market_price(
-                sell_ticker
-            )
+                # Create combo legs
+                comboLegs = [
+                    ComboLeg(
+                        conId=position.contract.conId,
+                        ratio=1,
+                        exchange="SMART",
+                        action="BUY",
+                    ),
+                    ComboLeg(
+                        conId=sell_ticker.contract.conId,
+                        ratio=1,
+                        exchange="SMART",
+                        action="SELL",
+                    ),
+                ]
 
-            # Create combo legs
-            comboLegs = [
-                ComboLeg(
-                    conId=position.contract.conId,
-                    ratio=1,
+                # Create contract
+                combo = Contract(
+                    secType="BAG",
+                    symbol=symbol,
+                    currency="USD",
                     exchange="SMART",
-                    action="BUY",
-                ),
-                ComboLeg(
-                    conId=sell_ticker.contract.conId,
-                    ratio=1,
-                    exchange="SMART",
-                    action="SELL",
-                ),
-            ]
+                    comboLegs=comboLegs,
+                )
 
-            # Create contract
-            combo = Contract(
-                secType="BAG",
-                symbol=symbol,
-                currency="USD",
-                exchange="SMART",
-                comboLegs=comboLegs,
-            )
+                # Create order
+                order = LimitOrder(
+                    "BUY",
+                    qty_to_roll,
+                    round(price, 2),
+                    algoStrategy="Adaptive",
+                    algoParams=[TagValue("adaptivePriority", "Patient")],
+                    tif="DAY",
+                )
 
-            # Create order
-            order = LimitOrder(
-                "BUY",
-                quantity,
-                round(price, 2),
-                algoStrategy="Adaptive",
-                algoParams=[TagValue("adaptivePriority", "Patient")],
-                tif="DAY",
-            )
+                to_dte = option_dte(sell_ticker.contract.lastTradeDateOrContractMonth)
+                from_strike = position.contract.strike
+                to_strike = sell_ticker.contract.strike
 
-            # Submit order
-            trade = self.ib.placeOrder(combo, order)
-            self.orders.append(trade)
-            click.echo()
-            click.secho(
-                f"Order submitted, current position={abs(position.position)} quantity to roll={quantity}, dte={dte}, price={round(price,2)}, trade={trade}",
-                fg="green",
-            )
+                # Submit order
+                trade = self.ib.placeOrder(combo, order)
+                self.orders.append(trade)
+                click.echo()
+                click.secho(
+                    f"Order submitted, current position={abs(position.position)}, qty_to_roll={qty_to_roll}, from_dte={from_dte}, to_dte={to_dte}, from_strike={from_strike}, to_strike={to_strike}, price={round(price,2)}, trade={trade}",
+                    fg="green",
+                )
+            except RuntimeError as e:
+                click.echo()
+                click.secho(str(e), fg="red")
+                click.secho(
+                    "Error occurred when trying to roll position. Continuing anyway...",
+                    fg="yellow",
+                )
 
     def find_eligible_contracts(
-        self, symbol, primary_exchange, right, strike_limit, excluded_expiration=None, excluded_strikes=[]
+        self,
+        symbol,
+        primary_exchange,
+        right,
+        strike_limit,
+        exclude_expirations_before=None,
+        exclude_first_exp_strike=None,
     ):
         click.echo()
         click.secho(
-            f"Searching option chain for symbol={symbol} right={right}, this can take a while...",
+            f"Searching option chain for symbol={symbol} "
+            f"right={right}, this can take a while...",
             fg="green",
         )
         click.echo()
@@ -841,9 +875,7 @@ class PortfolioManager:
         chain = next(c for c in chains if c.exchange == "SMART")
 
         def valid_strike(strike):
-            if strike in excluded_strikes:
-                return False
-            elif right.startswith("P") and strike_limit:
+            if right.startswith("P") and strike_limit:
                 return strike <= tickerValue and strike <= strike_limit
             elif right.startswith("P"):
                 return strike <= tickerValue
@@ -854,7 +886,9 @@ class PortfolioManager:
             return False
 
         chain_expirations = self.config["option_chains"]["expirations"]
-        min_dte = option_dte(excluded_expiration) if excluded_expiration else 0
+        min_dte = (
+            option_dte(exclude_expirations_before) if exclude_expirations_before else 0
+        )
 
         strikes = sorted(strike for strike in chain.strikes if valid_strike(strike))
         expirations = sorted(
@@ -879,7 +913,7 @@ class PortfolioManager:
                 strike,
                 right,
                 "SMART",
-                tradingClass=chain.tradingClass,
+                # tradingClass=chain.tradingClass,
             )
             for right in rights
             for expiration in expirations
@@ -887,6 +921,16 @@ class PortfolioManager:
         ]
 
         contracts = self.ib.qualifyContracts(*contracts)
+
+        # exclude strike, but only for the first exp
+        if exclude_first_exp_strike:
+            contracts = [
+                c
+                for c in contracts
+                if c.lastTradeDateOrContractMonth == expirations[0]
+                and c.strike != exclude_first_exp_strike
+                or c.lastTradeDateOrContractMonth != expirations[0]
+            ]
 
         tickers = self.get_ticker_list_for(tuple(contracts))
 
@@ -904,11 +948,12 @@ class PortfolioManager:
                 wait_n_seconds(
                     open_interest_is_not_ready,
                     lambda: self.ib.waitOnUpdate(timeout=15),
-                    api_response_wait_time,
+                    API_RESPONSE_WAIT_TIME,
                 )
             except RuntimeError:
                 click.secho(
-                    f"Timeout waiting on market data for {ticker.contract}. Continuing...",
+                    f"Timeout waiting on market data for "
+                    f"{ticker.contract}. Continuing...",
                     fg="yellow",
                 )
                 return False
