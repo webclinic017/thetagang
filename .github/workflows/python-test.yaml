@@ -1,8 +1,14 @@
-name: Python Publish
+name: Python Test
 
 on:
-  release:
-    types: [created]
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -14,8 +20,8 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - name: Set up Python ${{ matrix.python-version }}
-        id: setup-python
         uses: actions/setup-python@v4
+        id: setup-python
         with:
           python-version: ${{ matrix.python-version }}
       - name: Cache ~/.cache/pip
@@ -28,7 +34,7 @@ jobs:
         with:
           path: ~/.cache/pypoetry
           key: python-${{ steps.setup-python.outputs.python-version }}-poetry-${{ hashFiles('poetry.lock') }}
-      - name: Run image
+      - name: Install poetry
         uses: abatilo/actions-poetry@v2
         with:
           poetry-version: ${{ matrix.poetry-version }}
@@ -38,29 +44,9 @@ jobs:
       - name: Test with pytest
         run: |
           poetry run py.test
-
-  build-and-publish:
-    needs: test
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v3
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.x"
-      - name: Run image
-        uses: abatilo/actions-poetry@v2
-        with:
-          poetry-version: "1.4.0"
-      - name: Install dependencies
+      - name: Lint with pylint
         run: |
-          poetry install
-      - name: Build
+          poetry run pylint thetagang -E
+      - name: Check formatting with black
         run: |
-          poetry build
-      - name: Publish
-        env:
-          POETRY_PYPI_TOKEN_PYPI: ${{ secrets.PYPI_TOKEN }}
-        run: |
-          poetry publish
+          poetry run black thetagang --check --diff --color

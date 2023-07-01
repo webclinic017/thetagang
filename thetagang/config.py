@@ -1,10 +1,13 @@
 import math
 
-import click
+from rich.console import Console
 from schema import And, Optional, Or, Schema
 
 import thetagang.config_defaults as config_defaults
 from thetagang.dict_merge import dict_merge
+
+error_console = Console(stderr=True, style="bold red")
+console = Console()
 
 
 def normalize_config(config):
@@ -12,20 +15,16 @@ def normalize_config(config):
     # defaults, deprecated values, config changes, etc.
 
     if "twsVersion" in config["ibc"]:
-        click.secho(
+        error_console.print(
             "WARNING: config param ibc.twsVersion is deprecated, please remove it from your config.",
-            fg="yellow",
-            err=True,
         )
 
         # TWS version is pinned to latest stable, delete any existing config if it's present
         del config["ibc"]["twsVersion"]
 
     if "maximum_new_contracts" in config["target"]:
-        click.secho(
+        error_console.print(
             "WARNING: config param target.maximum_new_contracts is deprecated, please remove it from your config.",
-            fg="yellow",
-            err=True,
         )
 
         del config["target"]["maximum_new_contracts"]
@@ -46,6 +45,15 @@ def normalize_config(config):
         for s in config["symbols"].values():
             del s["parts"]
 
+    if (
+        "close_at_pnl" in config["roll_when"]
+        and config["roll_when"]["close_at_pnl"]
+        and config["roll_when"]["close_at_pnl"] <= config["roll_when"]["min_pnl"]
+    ):
+        raise RuntimeError(
+            "ERROR: roll_when.close_at_pnl needs to be greater than roll_when.min_pnl."
+        )
+
     return apply_default_values(config)
 
 
@@ -55,7 +63,9 @@ def apply_default_values(config):
 
 def validate_config(config):
     if "minimum_cushion" in config["account"]:
-        raise "Config error: minimum_cushion is deprecated and replaced with margin_usage. See sample config for details."
+        raise RuntimeError(
+            "Config error: minimum_cushion is deprecated and replaced with margin_usage. See sample config for details."
+        )
 
     schema = Schema(
         {
@@ -65,28 +75,41 @@ def validate_config(config):
                 "margin_usage": And(float, lambda n: 0 <= n),
                 "market_data_type": And(int, lambda n: 1 <= n <= 4),
             },
+            "orders": {
+                "exchange": And(str, len),
+                "algo": {
+                    "strategy": And(str, len),
+                    "params": [And([str], lambda p: len(p) == 2)],
+                },
+            },
             "option_chains": {
                 "expirations": And(int, lambda n: 1 <= n),
                 "strikes": And(int, lambda n: 1 <= n),
             },
             Optional("write_when"): {
                 Optional("calls"): {
-                    "green": bool,
+                    Optional("green"): bool,
+                    Optional("cap_factor"): And(float, lambda n: 0 <= n <= 1),
                 },
                 Optional("puts"): {
-                    "red": bool,
+                    Optional("red"): bool,
                 },
             },
             "roll_when": {
                 "pnl": And(float, lambda n: 0 <= n <= 1),
                 "dte": And(int, lambda n: 0 <= n),
                 "min_pnl": float,
+                Optional("close_at_pnl"): float,
                 Optional("max_dte"): And(int, lambda n: 1 <= n),
                 Optional("calls"): {
-                    "itm": bool,
+                    Optional("itm"): bool,
+                    Optional("credit_only"): bool,
+                    Optional("has_excess"): bool,
                 },
                 Optional("puts"): {
-                    "itm": bool,
+                    Optional("itm"): bool,
+                    Optional("credit_only"): bool,
+                    Optional("has_excess"): bool,
                 },
             },
             "target": {
@@ -112,12 +135,15 @@ def validate_config(config):
                     ),
                     Optional("primary_exchange"): And(str, len),
                     Optional("delta"): And(float, lambda n: 0 <= n <= 1),
+                    Optional("write_threshold"): And(float, lambda n: 0 <= n <= 1),
                     Optional("calls"): {
                         Optional("delta"): And(float, lambda n: 0 <= n <= 1),
+                        Optional("write_threshold"): And(float, lambda n: 0 <= n <= 1),
                         Optional("strike_limit"): And(float, lambda n: n > 0),
                     },
                     Optional("puts"): {
                         Optional("delta"): And(float, lambda n: 0 <= n <= 1),
+                        Optional("write_threshold"): And(float, lambda n: 0 <= n <= 1),
                         Optional("strike_limit"): And(float, lambda n: n > 0),
                     },
                 }
@@ -155,6 +181,18 @@ def validate_config(config):
                     Optional("secType"): And(str, len),
                     Optional("symbol"): And(str, len),
                 },
+            },
+            Optional("vix_call_hedge"): {
+                "enabled": bool,
+                Optional("delta"): And(float, lambda n: 0 <= n <= 1),
+                Optional("close_hedges_when_vix_exceeds"): float,
+                Optional("allocation"): [
+                    {
+                        Optional("lower_bound"): float,
+                        Optional("upper_bound"): float,
+                        Optional("weight"): float,
+                    },
+                ],
             },
         }
     )

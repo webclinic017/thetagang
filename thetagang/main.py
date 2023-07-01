@@ -22,7 +22,13 @@ CONTEXT_SETTINGS = dict(
     default="thetagang.toml",
     type=click.Path(exists=True, readable=True),
 )
-def cli(config):
+@click.option(
+    "--without-ibc",
+    is_flag=True,
+    help="Run without IBC. Enable this if you want to run the TWS "
+    "gateway yourself, without having ThetaGang manage it for you.",
+)
+def cli(config, without_ibc):
     """ThetaGang is an IBKR bot for collecting money.
 
     You can configure this tool by supplying a toml configuration file.
@@ -32,4 +38,4 @@ def cli(config):
 
     from .thetagang import start
 
-    start(config)
+    start(config, without_ibc)
