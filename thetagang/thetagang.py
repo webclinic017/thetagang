@@ -1,9 +1,7 @@
-#!/usr/bin/env python
+from asyncio import Future
 
-import asyncio
-
-from ib_insync import IB, IBC, Watchdog, util
-from ib_insync.contract import Contract
+from ib_async import IB, IBC, Watchdog, util
+from ib_async.contract import Contract
 from rich import box
 from rich.console import Console, Group
 from rich.panel import Panel
@@ -12,7 +10,13 @@ from rich.tree import Tree
 
 from thetagang.config import normalize_config, validate_config
 from thetagang.fmt import dfmt, ffmt, pfmt
-from thetagang.util import get_strike_limit, get_target_delta, get_write_threshold
+from thetagang.util import (
+    get_strike_limit,
+    get_target_delta,
+    get_write_threshold_perc,
+    get_write_threshold_sigma,
+    maintain_high_water_mark,
+)
 
 from .portfolio_manager import PortfolioManager
 
@@ -21,7 +25,7 @@ util.patchAsyncio()
 console = Console()
 
 
-def start(config_path, without_ibc=False):
+def start(config_path: str, without_ibc: bool = False) -> None:
     import toml
 
     with open(config_path, "r", encoding="utf8") as file:
@@ -53,18 +57,53 @@ def start(config_path, without_ibc=False):
     )
 
     config_table.add_section()
+    config_table.add_row("[spring_green1]Constants")
+    config_table.add_row(
+        "",
+        "Daily stddev window",
+        "=",
+        f"{config['constants']['daily_stddev_window']}",
+    )
+
+    c_write_thresh = (
+        f"{ffmt(get_write_threshold_sigma(config, None, 'C'))}σ"
+        if get_write_threshold_sigma(config, None, "C")
+        else pfmt(get_write_threshold_perc(config, None, "C"))
+    )
+    p_write_thresh = (
+        f"{ffmt(get_write_threshold_sigma(config, None, 'P'))}σ"
+        if get_write_threshold_sigma(config, None, "P")
+        else pfmt(get_write_threshold_perc(config, None, "P"))
+    )
+
+    config_table.add_row("", "Write threshold for puts", "=", p_write_thresh)
+    config_table.add_row("", "Write threshold for calls", "=", c_write_thresh)
+
+    config_table.add_section()
     config_table.add_row("[spring_green1]Order settings")
     config_table.add_row(
         "",
         "Exchange",
         "=",
-        f"= {config['orders']['exchange']}",
+        f"{config['orders']['exchange']}",
     )
     config_table.add_row(
         "",
         "Params",
         "=",
         f"{config['orders']['algo']['params']}",
+    )
+    config_table.add_row(
+        "",
+        "Price update delay",
+        "=",
+        f"{config['orders']['price_update_delay']}",
+    )
+    config_table.add_row(
+        "",
+        "Minimum credit",
+        "=",
+        f"{dfmt(config['orders']['minimum_credit'])}",
     )
 
     config_table.add_section()
@@ -74,6 +113,12 @@ def start(config_path, without_ibc=False):
         "When P&L",
         ">=",
         f"{pfmt(config['roll_when']['close_at_pnl'],0)}",
+    )
+    config_table.add_row(
+        "",
+        "Close if unable to roll",
+        "=",
+        f"{config['roll_when']['close_if_unable_to_roll']}",
     )
 
     config_table.add_section()
@@ -89,7 +134,7 @@ def start(config_path, without_ibc=False):
             "",
             "P&L",
             ">=",
-            f"{config['roll_when']['pnl']} ({pfmt(config['roll_when']['pnl'],0)}) and DTE < {config['roll_when']['max_dte']}",
+            f"{config['roll_when']['pnl']} ({pfmt(config['roll_when']['pnl'],0)}) and DTE <= {config['roll_when']['max_dte']}",
         )
     else:
         config_table.add_row(
@@ -123,26 +168,55 @@ def start(config_path, without_ibc=False):
         "=",
         f"{config['roll_when']['calls']['has_excess']}",
     )
-
-    config_table.add_section()
-    config_table.add_row("[spring_green1]For underlying, only write new contracts when")
     config_table.add_row(
         "",
-        "Puts, red",
+        "Calls: maintain high water mark",
+        "=",
+        f"{config['roll_when']['calls']['maintain_high_water_mark']}",
+    )
+    config_table.add_section()
+    config_table.add_row("[spring_green1]When writing new contracts")
+    config_table.add_row(
+        "",
+        "Calculate net contract positions",
+        "=",
+        f"{config['write_when']['calculate_net_contracts']}",
+    )
+    config_table.add_row(
+        "",
+        "Puts, write when red",
         "=",
         f"{config['write_when']['puts']['red']}",
     )
     config_table.add_row(
         "",
-        "Calls, green",
+        "Puts, write when green",
+        "=",
+        f"{config['write_when']['puts']['green']}",
+    )
+    config_table.add_row(
+        "",
+        "Calls, write when green",
         "=",
         f"{config['write_when']['calls']['green']}",
     )
     config_table.add_row(
         "",
+        "Calls, write when red",
+        "=",
+        f"{config['write_when']['calls']['red']}",
+    )
+    config_table.add_row(
+        "",
         "Call cap factor",
         "=",
-        f"{config['write_when']['calls']['cap_factor']}",
+        f"{pfmt(config['write_when']['calls']['cap_factor'])}",
+    )
+    config_table.add_row(
+        "",
+        "Call cap target floor",
+        "=",
+        f"{pfmt(config['write_when']['calls']['cap_target_floor'])}",
     )
 
     config_table.add_section()
@@ -155,14 +229,30 @@ def start(config_path, without_ibc=False):
     )
     config_table.add_row(
         "",
+        "Roll puts always",
+        "=",
+        f"{config['roll_when']['puts']['always_when_itm']}",
+    )
+    config_table.add_row(
+        "",
         "Roll calls",
         "=",
         f"{config['roll_when']['calls']['itm']}",
+    )
+    config_table.add_row(
+        "",
+        "Roll calls always",
+        "=",
+        f"{config['roll_when']['calls']['always_when_itm']}",
     )
 
     config_table.add_section()
     config_table.add_row("[spring_green1]Write options with targets of")
     config_table.add_row("", "Days to expiry", ">=", f"{config['target']['dte']}")
+    if "max_dte" in config["target"]:
+        config_table.add_row(
+            "", "Days to expiry", "<=", f"{config['target']['max_dte']}"
+        )
     config_table.add_row("", "Default delta", "<=", f"{config['target']['delta']}")
     if "puts" in config["target"]:
         config_table.add_row(
@@ -191,6 +281,81 @@ def start(config_path, without_ibc=False):
         f"{config['target']['minimum_open_interest']}",
     )
 
+    config_table.add_section()
+    config_table.add_row("[spring_green1]Cash management")
+    config_table.add_row("", "Enabled", "=", f"{config['cash_management']['enabled']}")
+    config_table.add_row(
+        "", "Cash fund", "=", f"{config['cash_management']['cash_fund']}"
+    )
+    config_table.add_row(
+        "",
+        "Target cash",
+        "=",
+        f"{dfmt(config['cash_management']['target_cash_balance'])}",
+    )
+    config_table.add_row(
+        "",
+        "Buy threshold",
+        "=",
+        f"{dfmt(config['cash_management']['buy_threshold'])}",
+    )
+    config_table.add_row(
+        "",
+        "Sell threshold",
+        "=",
+        f"{dfmt(config['cash_management']['sell_threshold'])}",
+    )
+
+    config_table.add_section()
+    config_table.add_row("[spring_green1]Hedging with VIX calls")
+    config_table.add_row("", "Enabled", "=", f"{config['vix_call_hedge']['enabled']}")
+    config_table.add_row(
+        "",
+        "Target delta",
+        "<=",
+        f"{config['vix_call_hedge']['delta']}",
+    )
+    config_table.add_row(
+        "",
+        "Target DTE",
+        ">=",
+        f"{config['vix_call_hedge']['target_dte']}",
+    )
+    config_table.add_row(
+        "",
+        "Ignore DTE",
+        "<=",
+        f"{config['vix_call_hedge']['ignore_dte']}",
+    )
+    config_table.add_row(
+        "",
+        "Ignore DTE",
+        "<=",
+        f"{config['vix_call_hedge']['ignore_dte']}",
+    )
+    config_table.add_row(
+        "",
+        "Close hedges when VIX",
+        ">=",
+        f"{config['vix_call_hedge']['close_hedges_when_vix_exceeds']}",
+    )
+    for alloc in config["vix_call_hedge"]["allocation"]:
+        config_table.add_row()
+        if "lower_bound" in alloc:
+            config_table.add_row(
+                "",
+                f"Allocate {pfmt(alloc['weight'])} when VIXMO",
+                ">=",
+                f"{alloc['lower_bound']}",
+            )
+        if "upper_bound" in alloc:
+            config_table.add_row(
+                "",
+                f"Allocate {pfmt(alloc['weight'])} when VIXMO",
+                "<=",
+                f"{alloc['upper_bound']}",
+            )
+
     symbols_table = Table(
         title="Configured symbols and target weights",
         box=box.SIMPLE_HEAVY,
@@ -201,6 +366,7 @@ def start(config_path, without_ibc=False):
     symbols_table.add_column("Call delta", justify="right")
     symbols_table.add_column("Call strike limit", justify="right")
     symbols_table.add_column("Call threshold", justify="right")
+    symbols_table.add_column("HWM", justify="right")
     symbols_table.add_column("Put delta", justify="right")
     symbols_table.add_column("Put strike limit", justify="right")
     symbols_table.add_column("Put threshold", justify="right")
@@ -210,10 +376,19 @@ def start(config_path, without_ibc=False):
             pfmt(sconfig["weight"]),
             ffmt(get_target_delta(config, symbol, "C")),
             dfmt(get_strike_limit(config, symbol, "C")),
-            pfmt(get_write_threshold(config, symbol, "C")),
+            (
+                f"{ffmt(get_write_threshold_sigma(config, symbol, 'C'))}σ"
+                if get_write_threshold_sigma(config, symbol, "C")
+                else pfmt(get_write_threshold_perc(config, symbol, "C"))
+            ),
+            str(maintain_high_water_mark(config, symbol)),
             ffmt(get_target_delta(config, symbol, "P")),
             dfmt(get_strike_limit(config, symbol, "P")),
-            pfmt(get_write_threshold(config, symbol, "P")),
+            (
+                f"{ffmt(get_write_threshold_sigma(config, symbol, 'P'))}σ"
+                if get_write_threshold_sigma(config, symbol, "P")
+                else pfmt(get_write_threshold_perc(config, symbol, "P"))
+            ),
         )
     assert (
         round(
@@ -227,16 +402,16 @@ def start(config_path, without_ibc=False):
     tree.add(Group(":yin_yang: Symbology", symbols_table))
     console.print(Panel(tree, title="Config"))
 
-    if config.get("ib_insync", {}).get("logfile"):
-        util.logToFile(config["ib_insync"]["logfile"])
+    if config.get("ib_async", {}).get("logfile"):
+        util.logToFile(config["ib_async"]["logfile"])  # type: ignore
 
-    def onConnected():
+    def onConnected() -> None:
         portfolio_manager.manage()
 
     ib = IB()
     ib.connectedEvent += onConnected
 
-    completion_future = asyncio.Future()
+    completion_future: Future[bool] = Future()
     portfolio_manager = PortfolioManager(config, ib, completion_future)
 
     probeContractConfig = config["watchdog"]["probeContract"]
@@ -263,7 +438,7 @@ def start(config_path, without_ibc=False):
         watchdog = Watchdog(ibc, ib, probeContract=probeContract, **watchdogConfig)
         watchdog.start()
 
-        ib.run(completion_future)
+        ib.run(completion_future)  # type: ignore
         watchdog.stop()
         ibc.terminate()
     else:
@@ -274,5 +449,5 @@ def start(config_path, without_ibc=False):
             timeout=watchdogConfig["probeTimeout"],
             account=config["account"]["number"],
         )
-        ib.run(completion_future)
+        ib.run(completion_future)  # type: ignore
         ib.disconnect()
